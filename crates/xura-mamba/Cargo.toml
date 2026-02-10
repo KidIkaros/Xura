@@ -1,0 +1,20 @@
+[package]
+name = "xura-mamba"
+description = "Mamba SSM (Selective State Space Model) — Mamba v1, v2, v3, S4, SSD"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+kore-core.workspace = true
+kore-nn.workspace = true
+kore-transformer.workspace = true
+kore-attention.workspace = true
+safetensors.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+half.workspace = true
+num-complex.workspace = true
+rustfft.workspace = true

@@ -1,0 +1,20 @@
+# Mamba3-JEPA Training Dependencies
+# Install: pip install -r requirements.txt
+
+torch>=2.2.0
+safetensors>=0.4.0
+einops>=0.7.0
+timm>=0.9.12
+transformers>=4.36.0
+datasets>=2.16.0
+wandb>=0.16.0
+accelerate>=0.25.0
+tqdm>=4.66.0
+pillow>=10.0.0
+
+# Mamba SSM (requires CUDA)
+# Install separately: pip install mamba-ssm>=2.0.0
+# Fallback: pure-PyTorch SSM implementation included in models/mamba3.py
+
+# Optional: for distributed training
+# deepspeed>=0.12.0
