@@ -12,8 +12,8 @@
 
 use rand::Rng;
 
-use kore_core::Tensor;
-use kore_nn::module::Module;
+use xura_core::Tensor;
+use xura_core::Module;
 
 use crate::norm::RMSNormGated;
 use crate::ssd3;
@@ -625,10 +625,10 @@ impl Mamba3 {
 }
 
 impl Module for Mamba3 {
-    fn forward(&self, input: &Tensor) -> kore_core::Result<Tensor> {
+    fn forward(&self, input: &Tensor) -> xura_core::Result<Tensor> {
         let dims = input.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(kore_core::KoreError::ShapeMismatch {
+            return Err(xura_core::KoreError::ShapeMismatch {
                 expected: vec![0, 0, 0],
                 got: dims,
             });
@@ -637,7 +637,7 @@ impl Module for Mamba3 {
         let seq_len = dims[1];
         let d = dims[2];
         if d != self.d_model {
-            return Err(kore_core::KoreError::ShapeMismatch {
+            return Err(xura_core::KoreError::ShapeMismatch {
                 expected: vec![batch, seq_len, self.d_model],
                 got: dims,
             });
@@ -645,7 +645,7 @@ impl Module for Mamba3 {
 
         let data = input.contiguous();
         let x = data.as_f32_slice().ok_or_else(|| {
-            kore_core::KoreError::UnsupportedDType(input.dtype())
+            xura_core::KoreError::UnsupportedDType(input.dtype())
         })?;
 
         let output = self.forward_train(x, batch, seq_len);

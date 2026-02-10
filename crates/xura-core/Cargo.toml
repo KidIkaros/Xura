@@ -1,0 +1,13 @@
+[package]
+name = "xura-core"
+description = "Minimal tensor engine and module trait for Xura"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+smallvec = "1.11"
+bytemuck = { version = "1.14", features = ["derive"] }
+thiserror = "1.0"
+rand = "0.8"

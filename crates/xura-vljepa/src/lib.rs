@@ -1,4 +1,4 @@
-//! # kore-vljepa
+//! # xura-vljepa
 //!
 //! Mamba3-JEPA: State-Space World Model for Vision-Language.
 //!

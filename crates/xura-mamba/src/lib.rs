@@ -1,6 +1,6 @@
-//! # kore-mamba
+//! # xura-mamba
 //!
-//! Mamba SSM (Selective State Space Model) architecture for Kore.
+//! Mamba SSM (Selective State Space Model) architecture for Xura.
 //!
 //! Implements both Mamba v1 and Mamba-2 from:
 //! - "Mamba: Linear-Time Sequence Modeling with Selective State Spaces" (Gu & Dao, 2023)
@@ -10,7 +10,7 @@
 //!
 //! ```rust,no_run
 //! use xura_mamba::{Mamba, Mamba2, MambaLMHeadModel, MambaConfig};
-//! use kore_core::Tensor;
+//! use xura_core::Tensor;
 //!
 //! // Single Mamba block
 //! let block = Mamba::new(64, 16, 4, 2); // d_model, d_state, d_conv, expand
