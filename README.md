@@ -1,8 +1,6 @@
 # Xura
 
-**Mamba3-JEPA Agent** — A vision-language state-space world model with adaptive neural gating, state-space delegation, and a 3-phase training pipeline.
-
-Built on [KORE](https://github.com/KidIkaros/KORE) foundations.
+**Mamba3-JEPA Agent** — A fully standalone vision-language state-space world model with adaptive neural gating, state-space delegation, and a 3-phase training pipeline.
 
 ## Architecture
 
