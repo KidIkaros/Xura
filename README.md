@@ -74,11 +74,11 @@ Xura/
 
 ## Dependencies
 
-Xura depends on [KORE](https://github.com/KidIkaros/KORE) foundation crates:
-- `kore-core` — Tensor engine
-- `kore-nn` — Neural network layers
-- `kore-transformer` — Transformer building blocks
-- `kore-attention` — Attention mechanisms
+Xura is **fully standalone** — no external ML framework dependencies. The `xura-core` crate provides a minimal tensor engine (~600 lines) with only what Mamba and VL-JEPA need:
+- `smallvec` — stack-allocated shape storage
+- `bytemuck` — zero-copy f32 ↔ byte casting
+- `rand` — weight initialization
+- `thiserror` — error types
 
 ## License
 
