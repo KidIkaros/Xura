@@ -71,7 +71,7 @@ impl VisualGate {
         if n == 0 {
             return 0;
         }
-        let step = (n / 256).max(1);
+        let step = 10; // Sample every 10th pixel (10% coverage)
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
         let mut i = 0;
         while i < n {
