@@ -25,7 +25,6 @@ Loss:          InfoNCE (symmetric contrastive)
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -59,10 +58,11 @@ class ImageTextDataset(Dataset):
       {id}.jpg + {id}.txt  OR  a JSONL manifest.
     """
 
-    def __init__(self, data_dir: str, image_size: int = 224, max_seq_len: int = 512):
+    def __init__(self, data_dir: str, image_size: int = 224, max_seq_len: int = 512, vocab_size: int = 32000):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
         self.max_seq_len = max_seq_len
+        self.vocab_size = vocab_size
 
         # Discover samples
         self.samples = []
@@ -110,7 +110,9 @@ class ImageTextDataset(Dataset):
             ])
             img = Image.open(sample["image"]).convert("RGB")
             image_tensor = transform(img)
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to load image {sample.get('image', '?')}: {e}", stacklevel=2)
             image_tensor = torch.randn(3, self.image_size, self.image_size)
 
         # Load text tokens (placeholder — replace with actual tokenizer)
@@ -118,11 +120,13 @@ class ImageTextDataset(Dataset):
             with open(sample["text"]) as f:
                 text = f.read().strip()
             # Simple character-level tokenization (replace with real tokenizer)
-            tokens = [ord(c) % 32000 for c in text[:self.max_seq_len]]
+            tokens = [ord(c) % self.vocab_size for c in text[:self.max_seq_len]]
             tokens = tokens + [0] * (self.max_seq_len - len(tokens))
             token_tensor = torch.tensor(tokens, dtype=torch.long)
-        except Exception:
-            token_tensor = torch.randint(0, 32000, (self.max_seq_len,))
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to load text {sample.get('text', '?')}: {e}", stacklevel=2)
+            token_tensor = torch.randint(0, self.vocab_size, (self.max_seq_len,))
 
         return {
             "image": image_tensor,
@@ -133,7 +137,7 @@ class ImageTextDataset(Dataset):
         """Generate a synthetic sample for testing the training loop."""
         return {
             "image": torch.randn(3, self.image_size, self.image_size),
-            "tokens": torch.randint(0, 256, (self.max_seq_len,)),
+            "tokens": torch.randint(0, self.vocab_size, (self.max_seq_len,)),
         }
 
 
@@ -303,8 +307,14 @@ def main():
     parser.add_argument("--wandb-project", type=str, default="mamba3-jepa")
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Phase 1] Device: {device}")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        gpu_name = torch.cuda.get_device_name(0)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"[Phase 1] Device: {device} ({gpu_name}, {vram_gb:.1f}GB VRAM)")
+    else:
+        device = torch.device("cpu")
+        print(f"[Phase 1] Device: {device} (no GPU detected)")
 
     # W&B
     if args.wandb:
@@ -314,6 +324,7 @@ def main():
     # ─── Build model ───
     if args.tiny:
         print("[Phase 1] Using TINY config for testing")
+        torch.backends.cudnn.benchmark = False
         model = Mamba3Jepa.tiny()
         image_size = 16
         vocab_size = 256
@@ -355,13 +366,14 @@ def main():
         args.data_dir,
         image_size=image_size,
         max_seq_len=args.max_seq_len,
+        vocab_size=vocab_size,
     )
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
         drop_last=True,
     )
 
@@ -378,7 +390,7 @@ def main():
         optimizer,
         max_lr=args.lr,
         total_steps=total_steps,
-        pct_start=args.warmup_steps / max(total_steps, 1),
+        pct_start=min(args.warmup_steps / max(total_steps, 1), 0.3),
     )
 
     # ─── Training ───

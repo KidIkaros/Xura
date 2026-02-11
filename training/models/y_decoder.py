@@ -1,4 +1,4 @@
-"""Mamba-3 Decoder (Y-Decoder) — PyTorch mirror of kore-vljepa's y_decoder.rs.
+"""Mamba-3 Decoder (Y-Decoder) — PyTorch mirror of xura-vljepa's y_decoder.rs.
 
 Takes predicted embeddings from the predictor and decodes them into text
 tokens using a Mamba-3 language model with prefix conditioning.
@@ -28,7 +28,7 @@ class Mamba3Decoder(nn.Module):
     The decoder is conditioned on the predicted embedding via learned prefix
     tokens, then autoregressively generates text.
 
-    Mirrors: kore-vljepa's Mamba3Decoder.
+    Mirrors: xura-vljepa's Mamba3Decoder.
     """
 
     def __init__(

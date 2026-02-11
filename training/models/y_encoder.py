@@ -1,4 +1,4 @@
-"""Mamba-3 Text Encoder (Y-Encoder) — PyTorch mirror of kore-vljepa's y_encoder.rs.
+"""Mamba-3 Text Encoder (Y-Encoder) — PyTorch mirror of xura-vljepa's y_encoder.rs.
 
 Encodes text tokens into the shared embedding space to produce JEPA
 training targets. The predictor learns to match these target embeddings.
@@ -30,7 +30,7 @@ class Mamba3TextEncoder(nn.Module):
     After Phase 1, the Y-encoder can optionally be frozen or used as an
     EMA target (like BYOL/DINO).
 
-    Mirrors: kore-vljepa's Mamba3TextEncoder.
+    Mirrors: xura-vljepa's Mamba3TextEncoder.
     """
 
     def __init__(

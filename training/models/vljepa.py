@@ -1,4 +1,4 @@
-"""Full Mamba3-JEPA model — PyTorch mirror of kore-vljepa's vljepa.rs.
+"""Full Mamba3-JEPA model — PyTorch mirror of xura-vljepa's vljepa.rs.
 
 Combines all components into a single module for training and inference.
 This is the top-level model used by the training scripts.
@@ -33,7 +33,7 @@ class Mamba3Jepa(nn.Module):
       Phase 3 (Agent): Fine-tune recursion + tools.
                         Core model frozen or LoRA.
 
-    Mirrors: kore-vljepa's Mamba3Jepa.
+    Mirrors: xura-vljepa's Mamba3Jepa.
     """
 
     def __init__(

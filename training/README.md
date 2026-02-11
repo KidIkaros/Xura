@@ -1,6 +1,6 @@
 # Mamba3-JEPA Training
 
-PyTorch training scripts for the Kore Mamba3-JEPA architecture. Train in Python, export to safetensors, load in Rust for inference.
+PyTorch training scripts for the Xura Mamba3-JEPA architecture. Train in Python, export to safetensors, load in Rust for inference.
 
 ## Setup
 
@@ -125,7 +125,7 @@ Output safetensors files:
 ## Loading in Rust
 
 ```rust
-use kore_vljepa::loader::load_safetensors;
+use xura_vljepa::loader::load_safetensors;
 
 let weights = load_safetensors("weights/predictor.safetensors")?;
 // Apply weights to Mamba3Predictor...

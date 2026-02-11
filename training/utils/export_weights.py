@@ -1,7 +1,7 @@
 """Weight export utility: PyTorch → safetensors for Rust inference.
 
 Converts trained PyTorch model state dicts into safetensors files that
-the Rust kore-vljepa loader can read. Handles key name remapping between
+the Rust xura-vljepa loader can read. Handles key name remapping between
 PyTorch module paths and the flat key namespace expected by Rust.
 
 Usage:
@@ -22,7 +22,7 @@ from safetensors.torch import save_file
 # Weight key mapping: PyTorch module path → safetensors key
 # ═══════════════════════════════════════════════════════════════════════════
 
-# The Rust loader (kore-vljepa/src/loader.rs) expects flat keys.
+# The Rust loader (xura-vljepa/src/loader.rs) expects flat keys.
 # PyTorch modules produce hierarchical keys like "predictor.backbone.layers.0.in_proj.weight".
 # This mapping defines how to translate them.
 

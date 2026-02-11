@@ -1,4 +1,4 @@
-"""Mamba-3 Predictor — PyTorch mirror of kore-vljepa's predictor.rs.
+"""Mamba-3 Predictor — PyTorch mirror of xura-vljepa's predictor.rs.
 
 Maps (visual embeddings + text query) → predicted target embedding
 using a Mamba-3 backbone with optional ANGN gating.
@@ -29,7 +29,7 @@ class Mamba3Predictor(nn.Module):
       visual_tokens → vision_proj → concat with query_proj(query_embeds)
       → Mamba-3 backbone (with ANGN gating) → mean pool → pred_head → L2 norm
 
-    Mirrors: kore-vljepa's Mamba3Predictor.
+    Mirrors: xura-vljepa's Mamba3Predictor.
     """
 
     def __init__(
