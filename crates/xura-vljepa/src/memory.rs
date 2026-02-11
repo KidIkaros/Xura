@@ -9,6 +9,11 @@
 //! highly compressed video log of its life. To "remember" things later, scan
 //! the lightweight index file for high-similarity embeddings, look up the
 //! timestamp, and seek to that exact second in the video.
+//!
+//! Memory is **standard** (always attempted, never opt-in) with graceful
+//! degradation if the filesystem is unavailable. See `ARCHITECTURE.md` for
+//! the rationale behind mandatory memory, ffmpeg as an external process,
+//! and filesystem-on-init.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
