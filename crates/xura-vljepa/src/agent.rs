@@ -232,7 +232,13 @@ impl Mamba3Agent {
 
         // Open disk-backed memory if enabled in config
         let memory = if agent_config.memory.enabled {
-            VisualMemory::open_index_only(agent_config.memory.clone()).ok()
+            match VisualMemory::open_index_only(agent_config.memory.clone()) {
+                Ok(mem) => Some(mem),
+                Err(e) => {
+                    eprintln!("[Mamba3Agent] WARNING: failed to open VisualMemory: {}", e);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -358,7 +364,9 @@ impl Mamba3Agent {
         self.last_embedding = None;
         // Flush disk memory before resetting
         if let Some(ref mut mem) = self.memory {
-            let _ = mem.flush();
+            if let Err(e) = mem.flush() {
+                eprintln!("[Mamba3Agent] WARNING: memory flush on reset failed: {}", e);
+            }
         }
         self.selective_decoder.reset();
         self.visual_gate.reset();
@@ -535,12 +543,14 @@ impl Mamba3Agent {
             None
         };
 
-        let _ = mem.append(
+        if let Err(e) = mem.append(
             rgb_bytes.as_deref(),
             embedding,
             response_tokens,
             step,
-        );
+        ) {
+            eprintln!("[Mamba3Agent] WARNING: memory append failed at step {}: {}", step, e);
+        }
     }
 }
 
