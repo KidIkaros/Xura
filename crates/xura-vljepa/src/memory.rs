@@ -94,6 +94,8 @@ pub struct VisualMemory {
     ffmpeg_child: Option<Child>,
     /// Stream A: pipe to ffmpeg's stdin.
     video_pipe: Option<std::process::ChildStdin>,
+    /// ffmpeg stderr pipe for error capture.
+    ffmpeg_stderr: Option<std::process::ChildStderr>,
     /// Stream B: buffered writer for the bincode index.
     index_writer: BufWriter<File>,
     /// Number of frames written (sync counter).
@@ -127,7 +129,7 @@ impl VisualMemory {
         let index_writer = BufWriter::new(index_file);
 
         // Spawn ffmpeg if video is enabled
-        let (ffmpeg_child, video_pipe) = if enable_video {
+        let (ffmpeg_child, video_pipe, ffmpeg_stderr) = if enable_video {
             let video_path = format!("{}/history.mp4", config.output_dir);
             let mut child = Command::new(&config.ffmpeg_path)
                 .args([
@@ -144,18 +146,20 @@ impl VisualMemory {
                 ])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()?;
 
             let stdin = child.stdin.take();
-            (Some(child), stdin)
+            let stderr = child.stderr.take();
+            (Some(child), stdin, stderr)
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         Ok(Self {
             ffmpeg_child,
             video_pipe,
+            ffmpeg_stderr,
             index_writer,
             frame_count: 0,
             index_count: 0,
@@ -215,8 +219,8 @@ impl VisualMemory {
             io::Error::new(io::ErrorKind::Other, format!("bincode serialize: {}", e))
         })?;
 
-        // Write length-prefixed entry (u32 LE length + payload)
-        let len = encoded.len() as u32;
+        // Write length-prefixed entry (u64 LE length + payload)
+        let len = encoded.len() as u64;
         self.index_writer.write_all(&len.to_le_bytes())?;
         self.index_writer.write_all(&encoded)?;
         self.index_count += 1;
@@ -246,9 +250,25 @@ impl VisualMemory {
         // Close video pipe (signals EOF to ffmpeg → finalizes MP4)
         self.video_pipe.take();
 
-        // Wait for ffmpeg to finish
+        // Wait for ffmpeg to finish and check exit status
         if let Some(ref mut child) = self.ffmpeg_child {
-            let _ = child.wait();
+            // Read stderr before wait() so it's available for error messages
+            let stderr_output = self.ffmpeg_stderr.take().and_then(|mut stderr| {
+                use std::io::Read;
+                let mut buf = String::new();
+                stderr.read_to_string(&mut buf).ok().map(|_| buf)
+            });
+
+            let status = child.wait()?;
+            if !status.success() {
+                let msg = match stderr_output {
+                    Some(ref err) if !err.is_empty() => {
+                        format!("ffmpeg exited with {}: {}", status, err.trim_end())
+                    }
+                    _ => format!("ffmpeg exited with {}", status),
+                };
+                return Err(io::Error::new(io::ErrorKind::Other, msg));
+            }
         }
         self.ffmpeg_child.take();
 
@@ -288,13 +308,13 @@ pub fn read_index(path: &str) -> io::Result<Vec<IndexEntry>> {
     let mut entries = Vec::new();
 
     loop {
-        let mut len_buf = [0u8; 4];
+        let mut len_buf = [0u8; 8];
         match file.read_exact(&mut len_buf) {
             Ok(()) => {}
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e),
         }
-        let len = u32::from_le_bytes(len_buf) as usize;
+        let len = u64::from_le_bytes(len_buf) as usize;
         if len > 10_000_000 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
