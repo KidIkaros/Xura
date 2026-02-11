@@ -170,9 +170,7 @@ class Mamba3Layer(nn.Module):
         # Trapezoidal discretization:
         #   A_bar = exp(A * dt)  [ZOH part]
         #   B_bar = α * (A_bar - 1) / A * B + (1 - α) * dt * B  [trapezoidal blend]
-        A_bar = torch.exp(A.unsqueeze(0).unsqueeze(0) * dt.unsqueeze(-1))  # (B, L, nheads, 1)
-        # Simplification: for diagonal A, B_bar ≈ dt * B (Euler) blended with ZOH
-        dt_expand = dt.unsqueeze(-1)  # (B, L, nheads, 1)
+        # Note: A_bar is computed per-step inside the scan loop (as A_disc) for stability
 
         # SSM scan (sequential for correctness; parallel scan is a training optimization)
         # State: (batch, nheads, d_state)
@@ -199,7 +197,7 @@ class Mamba3Layer(nn.Module):
             x_scalar = x_t.mean(dim=-1, keepdim=True)  # (B, nheads, 1)
             alpha = self.trapezoidal_alpha
             h_new_zoh = A_disc * h + dt_t * B_t * x_scalar
-            h_new_euler = h + dt_t * (A.unsqueeze(0).unsqueeze(-1) * h + B_t * x_scalar)
+            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-20, 20) + B_t * x_scalar)
             h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
 
             # Output: y = C * h + D * x
