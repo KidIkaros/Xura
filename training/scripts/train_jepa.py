@@ -24,11 +24,21 @@ Usage:
         --resume checkpoints/phase1/phase1_epoch010.pt \
         --data-dir /path/to/data --output-dir checkpoints/phase1
 
-    # Phase 1.5: Stream from YouTube playlist (buffered, no disk dataset)
+    # Phase 1.5: Stream from YouTube playlist
     python scripts/train_jepa.py \
         --playlist-url 'https://www.youtube.com/playlist?list=PLxxx' \
         --total-steps 50000 --frame-skip 5 --batch-size 8 \
         --output-dir checkpoints/phase1_stream --fp16
+
+    # Phase 1.5: Stream from local video directory
+    python scripts/train_jepa.py \
+        --video-dir /path/to/videos \
+        --total-steps 50000 --seq-len 16 --batch-size 8 --fp16
+
+    # Phase 1.5: Stream from HTTP/S3 URLs
+    python scripts/train_jepa.py \
+        --video-urls https://cdn.example.com/v1.mp4 https://cdn.example.com/v2.mp4 \
+        --total-steps 50000 --batch-size 8 --fp16
 
 What trains:   Predictor backbone + ANGN gates + Y-Encoder
 What's frozen: X-Encoder (ViT)
@@ -59,7 +69,10 @@ from models.angn import ANGNConfig
 from models.y_encoder import Mamba3TextEncoder
 from models.y_decoder import Mamba3Decoder
 from utils.export_weights import export_to_safetensors
-from utils.stream_loader import YouTubeStreamDataset
+from utils.stream_loader import (
+    VideoStreamDataset, YouTubeStreamDataset,
+    YouTubeSource, LocalDirectorySource, URLListSource,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -651,9 +664,13 @@ def main():
     parser.add_argument("--wandb", action="store_true",
                         help="Enable W&B logging")
     parser.add_argument("--wandb-project", type=str, default="mamba3-jepa")
-    # Phase 1.5: YouTube streaming args
+    # Phase 1.5: Video streaming args (any source)
     parser.add_argument("--playlist-url", type=str, default=None,
-                        help="YouTube playlist URL (activates buffered streaming mode)")
+                        help="YouTube playlist URL (streaming mode)")
+    parser.add_argument("--video-dir", type=str, default=None,
+                        help="Local directory of video files (streaming mode)")
+    parser.add_argument("--video-urls", type=str, nargs="+", default=None,
+                        help="HTTP/S3 video URLs (streaming mode)")
     parser.add_argument("--total-steps", type=int, default=50000,
                         help="Total training steps for streaming mode")
     parser.add_argument("--seq-len", type=int, default=16,
@@ -724,26 +741,36 @@ def main():
     print(f"[Phase 1] Trainable: {trainable:,} | Frozen: {frozen:,}")
 
     # ─── Data ───
-    streaming_mode = args.playlist_url is not None
+    # Resolve video source: YouTube playlist, local directory, or URL list
+    video_source = None
+    if args.playlist_url is not None:
+        video_source = YouTubeSource(args.playlist_url, max_resolution=480)
+        print(f"[Phase 1.5] YouTube streaming: {args.playlist_url}")
+    elif args.video_dir is not None:
+        video_source = LocalDirectorySource(args.video_dir, recursive=True)
+        print(f"[Phase 1.5] Local video dir: {args.video_dir}")
+    elif args.video_urls is not None:
+        video_source = URLListSource(args.video_urls)
+        print(f"[Phase 1.5] URL list: {len(args.video_urls)} videos")
+
+    streaming_mode = video_source is not None
 
     if streaming_mode:
-        print(f"[Phase 1.5] YouTube streaming mode (buffered)")
-        print(f"  playlist: {args.playlist_url}")
-        print(f"  frame_skip={args.frame_skip}, total_steps={args.total_steps}")
-        dataset = YouTubeStreamDataset(
-            playlist_url=args.playlist_url,
+        print(f"  seq_len={args.seq_len}, frame_skip={args.frame_skip}, total_steps={args.total_steps}")
+        dataset = VideoStreamDataset(
+            source=video_source,
             image_size=image_size,
             seq_len=args.seq_len,
             frame_skip=args.frame_skip,
             max_seq_len=args.max_seq_len,
             vocab_size=vocab_size,
-            max_resolution=480,
         )
-        # IterableDataset: no sampler, no shuffle, cap workers to avoid IP ban
+        # IterableDataset: no sampler, no shuffle, cap workers for remote sources
+        max_workers = args.num_workers if isinstance(video_source, LocalDirectorySource) else min(args.num_workers, 2)
         dataloader = DataLoader(
             dataset,
             batch_size=args.batch_size,
-            num_workers=min(args.num_workers, 2),
+            num_workers=max_workers,
             pin_memory=device.type == "cuda",
             drop_last=True,
         )

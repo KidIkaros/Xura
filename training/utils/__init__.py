@@ -1,4 +1,11 @@
 """Training utilities for Mamba3-JEPA."""
 
 from .export_weights import export_to_safetensors, build_weight_map
-from .stream_loader import YouTubeStreamDataset
+from .stream_loader import (
+    VideoSource,
+    VideoStreamDataset,
+    YouTubeSource,
+    YouTubeStreamDataset,
+    LocalDirectorySource,
+    URLListSource,
+)
