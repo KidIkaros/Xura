@@ -45,9 +45,11 @@ class Mamba3Config:
 
 # Numerical stability constants for SSM discretization.
 # All clamp bounds are symmetric where applicable to prevent asymmetric overflow.
-_A_LOG_CLAMP_MAX = 5.0       # Prevents exp(A_log) from exploding
-_A_DT_CLAMP_MIN = -20.0      # Floor for exp(A * dt) in ZOH discretization
-_STATE_CLAMP_ABS = 20.0      # Symmetric clamp for intermediate state products (A*h, B*x)
+_A_LOG_CLAMP_MAX = 2.0        # Clamp A_log so |A| = exp(A_log) ≤ ~7.4 (conservative)
+_A_DT_CLAMP_MIN = -20.0       # Floor for A*dt exponent in ZOH discretization
+_A_DT_CLAMP_MAX = 0.0         # Ceiling for A*dt exponent (A is negative → A*dt ≤ 0)
+_DT_CLAMP_MAX = 10.0          # Upper bound for dt after softplus to prevent overflow
+_STATE_CLAMP_ABS = 20.0       # Symmetric clamp for all intermediate state products
 
 
 class RMSNorm(nn.Module):
@@ -122,10 +124,11 @@ class Mamba3Layer(nn.Module):
 
         # SSM parameters
         # A is stored as log for numerical stability (complex-valued in Mamba-3)
-        # Initialize A_log ~ U(0.001, 0.1) so A = -exp(A_log) stays small and stable
-        self.A_log = nn.Parameter(torch.log(torch.linspace(0.001, 0.1, self.nheads)))
+        # Initialize A_log ~ log(U(0.001, 0.1)) so A = -exp(A_log) stays small and stable
+        # Uniform random (not linspace) for variation across heads and layers
+        self.A_log = nn.Parameter(torch.log(torch.empty(self.nheads).uniform_(0.001, 0.1)))
         self.D = nn.Parameter(torch.ones(self.nheads))
-        self.dt_bias = nn.Parameter(torch.zeros(self.nheads))
+        self.dt_bias = nn.Parameter(torch.randn(self.nheads) * 0.02)  # small random for symmetry breaking
 
         # Output projection
         self.out_proj = nn.Linear(d_inner, config.d_model, bias=False)
@@ -167,8 +170,8 @@ class Mamba3Layer(nn.Module):
             # cos, sin: (seq_len, headdim)
             x_ssm = apply_rope(x_ssm, cos.unsqueeze(0).unsqueeze(2), sin.unsqueeze(0).unsqueeze(2))
 
-        # Discretize dt: softplus(dt_raw + dt_bias)
-        dt = F.softplus(dt_raw + self.dt_bias)  # (batch, seq_len, nheads)
+        # Discretize dt: softplus(dt_raw + dt_bias), clamped to prevent overflow
+        dt = F.softplus(dt_raw + self.dt_bias).clamp(max=_DT_CLAMP_MAX)  # (batch, seq_len, nheads)
 
         # SSM: A (negative for stability), clamped to prevent overflow
         A = -torch.exp(self.A_log.clamp(max=_A_LOG_CLAMP_MAX))  # (nheads,)
@@ -196,18 +199,18 @@ class Mamba3Layer(nn.Module):
             dt_t = dt[:, t].unsqueeze(-1)  # (B, nheads, 1)
 
             # Trapezoidal discretization (clamp exponent for stability)
-            A_disc = torch.exp((A.unsqueeze(0).unsqueeze(-1) * dt_t).clamp(_A_DT_CLAMP_MIN, 0))  # (B, nheads, 1)
+            A_disc = torch.exp((A.unsqueeze(0).unsqueeze(-1) * dt_t).clamp(_A_DT_CLAMP_MIN, _A_DT_CLAMP_MAX))  # (B, nheads, 1)
 
             # State update: h = A_bar * h + dt * B * x (simplified)
             # Input contribution: use mean of x across headdim as scalar modulator
             x_scalar = x_t.mean(dim=-1, keepdim=True)  # (B, nheads, 1)
             alpha = self.trapezoidal_alpha
             input_drive = (B_t * x_scalar).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
-            h_new_zoh = A_disc * h + dt_t * input_drive
+            h_new_zoh = (A_disc * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + dt_t * input_drive
             h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + input_drive)
             h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
 
-            # Output: y = C * h + D * x (clamp h to bound output magnitude)
+            # Clamp blended state for next-iteration safety and output stability
             h = h.clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
             y_t = torch.einsum("bhn,bhn->bh", C_t, h)  # (B, nheads)
             y_t = y_t + self.D.unsqueeze(0) * x_t.mean(dim=-1)  # D skip connection
