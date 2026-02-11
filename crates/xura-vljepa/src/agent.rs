@@ -203,9 +203,10 @@ pub struct Mamba3Agent {
     tool_injector: StateInjector,
     /// Selective decoder for streaming output.
     selective_decoder: SelectiveDecoder,
-    /// Disk-backed dual-stream memory — always on.
+    /// Disk-backed dual-stream memory — standard, always attempted.
     /// Memory is the foundation of the World Model, not an optional plugin.
-    memory: VisualMemory,
+    /// None only if filesystem init failed (degraded mode with loud warning).
+    memory: Option<VisualMemory>,
     /// Current step counter.
     step_count: usize,
     /// Last embedding produced (stored as f16 to halve memory).
@@ -231,10 +232,18 @@ impl Mamba3Agent {
         let tool_injector = StateInjector::new(model_config.shared_embed_dim, knowledge_dim);
         let model = Mamba3Jepa::new(model_config);
 
-        // Memory is always on — it is the foundation of the World Model.
-        // Without memory the agent lives in an "Eternal Now" and cannot learn.
-        let memory = VisualMemory::open_index_only(agent_config.memory.clone())
-            .expect("[Xura] FATAL: failed to open VisualMemory — cannot start agent without memory");
+        // Memory is standard — always attempted, never opt-in.
+        // If the filesystem fails, the agent degrades gracefully (no crash)
+        // but logs a loud warning because this is NOT expected.
+        let memory = match VisualMemory::open_index_only(agent_config.memory.clone()) {
+            Ok(mem) => Some(mem),
+            Err(e) => {
+                eprintln!("[Xura] WARNING: failed to open VisualMemory: {}", e);
+                eprintln!("[Xura] WARNING: agent running in DEGRADED MODE — no memory persistence!");
+                eprintln!("[Xura] WARNING: the agent will forget everything between sessions.");
+                None
+            }
+        };
 
         Self {
             model,
@@ -356,8 +365,10 @@ impl Mamba3Agent {
         self.step_count = 0;
         self.last_embedding = None;
         // Flush disk memory before resetting
-        if let Err(e) = self.memory.flush() {
-            eprintln!("[Xura] WARNING: memory flush on reset failed: {}", e);
+        if let Some(ref mut mem) = self.memory {
+            if let Err(e) = mem.flush() {
+                eprintln!("[Xura] WARNING: memory flush on reset failed: {}", e);
+            }
         }
         self.selective_decoder.reset();
         self.visual_gate.reset();
@@ -373,8 +384,9 @@ impl Mamba3Agent {
     }
 
     /// Get the number of entries written to disk-backed memory.
+    /// Returns 0 if running in degraded mode (memory init failed).
     pub fn memory_entry_count(&self) -> u64 {
-        self.memory.index_count()
+        self.memory.as_ref().map_or(0, |m| m.index_count())
     }
 
     // ─── Internal methods ────────────────────────────────────────────
@@ -517,8 +529,13 @@ impl Mamba3Agent {
         response_tokens: &[usize],
         step: usize,
     ) {
+        let mem = match self.memory.as_mut() {
+            Some(m) => m,
+            None => return, // degraded mode — no memory
+        };
+
         // Convert f32 image to RGB bytes for ffmpeg (if video stream is active)
-        let rgb_bytes = if self.memory.has_video() {
+        let rgb_bytes = if mem.has_video() {
             input.image.as_ref().map(|img| {
                 let c = self.model.config.vit.in_channels;
                 f32_image_to_rgb_bytes(img, c, input.image_h, input.image_w)
@@ -527,7 +544,7 @@ impl Mamba3Agent {
             None
         };
 
-        if let Err(e) = self.memory.append(
+        if let Err(e) = mem.append(
             rgb_bytes.as_deref(),
             embedding,
             response_tokens,

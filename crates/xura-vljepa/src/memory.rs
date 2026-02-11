@@ -380,13 +380,13 @@ fn enforce_retention(output_dir: &str, config: &VisualMemoryConfig) -> io::Resul
             continue;
         }
 
-        // Only manage our own files
+        // Only manage Xura's own rotated files — never touch unrelated files.
+        // Active session: memory.index, history.mp4 (skipped below)
+        // Rotated files: memory_<timestamp>.index, history_<timestamp>.mp4
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !name.ends_with(".index") && !name.ends_with(".mp4") {
-            continue;
-        }
-        // Don't touch the active session files
-        if name == "memory.index" || name == "history.mp4" {
+        let is_rotated_index = name.starts_with("memory_") && name.ends_with(".index");
+        let is_rotated_video = name.starts_with("history_") && name.ends_with(".mp4");
+        if !is_rotated_index && !is_rotated_video {
             continue;
         }
 
