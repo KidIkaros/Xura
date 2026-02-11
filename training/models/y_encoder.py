@@ -81,8 +81,8 @@ class Mamba3TextEncoder(nn.Module):
         # Embed tokens
         x = self.embedding(token_ids)           # (B, L, d_model)
 
-        # Backbone
-        x = self.backbone(x)                    # (B, L, d_model)
+        # Backbone (discard SSM states — Y-Encoder doesn't need BPTT)
+        x, _ = self.backbone(x)                 # (B, L, d_model)
 
         # Mean pool over sequence
         pooled = x.mean(dim=1)                  # (B, d_model)
@@ -98,6 +98,15 @@ class Mamba3TextEncoder(nn.Module):
             vocab_size=32000, d_model=768, n_layers=12,
             d_state=64, expand=2, headdim=32, ngroups=1,
             max_seq_len=512, embed_dim=1536,
+        )
+
+    @classmethod
+    def kaggle(cls) -> "Mamba3TextEncoder":
+        """Kaggle preset — fits T4 16GB with predictor."""
+        return cls(
+            vocab_size=32000, d_model=384, n_layers=6,
+            d_state=32, expand=2, headdim=16, ngroups=1,
+            max_seq_len=512, embed_dim=768,
         )
 
     @classmethod

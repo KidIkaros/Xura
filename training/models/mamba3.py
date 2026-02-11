@@ -141,14 +141,20 @@ class Mamba3Layer(nn.Module):
 
         self.trapezoidal_alpha = config.trapezoidal_alpha
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, initial_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass.
 
         Args:
             x: (batch, seq_len, d_model)
+            initial_state: Optional (batch, nheads, d_state) hidden state
+                           from previous chunk for BPTT. If None, starts from zero.
 
         Returns:
-            (batch, seq_len, d_model)
+            (output, final_state) where:
+              output: (batch, seq_len, d_model)
+              final_state: (batch, nheads, d_state) — carry to next chunk
         """
         batch, seq_len, _ = x.shape
 
@@ -183,7 +189,10 @@ class Mamba3Layer(nn.Module):
 
         # SSM scan (sequential for correctness; parallel scan is a training optimization)
         # State: (batch, nheads, d_state)
-        h = torch.zeros(batch, self.nheads, self.d_state, device=x.device, dtype=x.dtype)
+        if initial_state is not None:
+            h = initial_state
+        else:
+            h = torch.zeros(batch, self.nheads, self.d_state, device=x.device, dtype=x.dtype)
         outputs = []
 
         # Expand B from groups to heads
@@ -222,7 +231,7 @@ class Mamba3Layer(nn.Module):
         y = y * F.silu(z)
 
         # Output projection
-        return self.out_proj(y)
+        return self.out_proj(y), h
 
 
 class Mamba3Backbone(nn.Module):
@@ -246,17 +255,23 @@ class Mamba3Backbone(nn.Module):
         self,
         hidden: torch.Tensor,
         gate_fn=None,
-    ) -> torch.Tensor:
+        initial_states: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Forward through backbone with optional per-layer gating.
 
         Args:
             hidden: (batch, seq_len, d_model)
             gate_fn: Optional callable(hidden, layer_idx) → gated_hidden
                      Used by ANGN for pre-layer multiplicative filtering.
+            initial_states: Optional list of per-layer SSM states, each
+                            (batch, nheads, d_state). For BPTT state carry-over.
 
         Returns:
-            (batch, seq_len, d_model)
+            (output, final_states) where:
+              output: (batch, seq_len, d_model)
+              final_states: list of per-layer (batch, nheads, d_state)
         """
+        final_states = []
         for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
             # 1) ANGN gate (if provided)
             if gate_fn is not None:
@@ -264,9 +279,11 @@ class Mamba3Backbone(nn.Module):
 
             # 2) Pre-norm
             normed = norm(hidden)
-            # 3) Mixer
-            mixed = layer(normed)
+            # 3) Mixer (with optional state carry-over)
+            layer_state = initial_states[i] if initial_states is not None else None
+            mixed, state_out = layer(normed, initial_state=layer_state)
+            final_states.append(state_out)
             # 4) Residual
             hidden = hidden + mixed
 
-        return self.final_norm(hidden)
+        return self.final_norm(hidden), final_states

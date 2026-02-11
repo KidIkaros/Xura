@@ -31,6 +31,14 @@ class VitConfig:
         return cls()
 
     @classmethod
+    def kaggle(cls) -> "VitConfig":
+        """ViT-B/16 config for Kaggle T4 16GB. 768-dim output."""
+        return cls(
+            patch_size=16, image_size=224, d_model=768,
+            n_heads=12, n_layers=12, d_ff=3072,
+        )
+
+    @classmethod
     def tiny(cls) -> "VitConfig":
         return cls(
             patch_size=4, image_size=16, d_model=32,

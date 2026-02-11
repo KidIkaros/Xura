@@ -281,11 +281,10 @@ class YouTubeStreamDataset(IterableDataset):
                 if not ret:
                     break
 
-                # Apply frame skip
-                if frame_count % self.frame_skip != 0:
-                    frame_count += 1
-                    continue
+                # Apply frame skip: keep every Nth frame
                 frame_count += 1
+                if (frame_count - 1) % self.frame_skip != 0:
+                    continue
 
                 current = _process_frame(frame_bgr, self.image_size)
 
