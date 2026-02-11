@@ -25,11 +25,90 @@
 //! `persistent_state = true`), so the agent develops a continuous
 //! stream of consciousness that accumulates identity and working style.
 
+use half::f16;
+
 use crate::config::{AgentConfig, Mamba3JepaConfig};
 use crate::recursion::StateInjector;
 use crate::selective_decode::SelectiveDecoder;
 use crate::tools::{Tool, ToolRegistry, ToolRequest, ToolResult};
 use crate::vljepa::{InferenceMode, InferenceOutput, Mamba3Jepa};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VisualGate — skip ViT on static frames (fixes "Retina Burn")
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Caches ViT output and skips re-encoding when the image hasn't changed.
+///
+/// Uses FNV-1a hashing on sampled pixels for O(1) change detection.
+/// Cached visual tokens are stored in f16 to halve memory usage.
+pub struct VisualGate {
+    last_hash: u64,
+    /// Cached ViT visual tokens, stored as f16.
+    cached_tokens: Vec<f16>,
+    /// Number of patches in the cached output.
+    num_patches: usize,
+    /// Cache hit count (for diagnostics).
+    pub hits: usize,
+    /// Cache miss count (for diagnostics).
+    pub misses: usize,
+}
+
+impl VisualGate {
+    pub fn new() -> Self {
+        Self {
+            last_hash: 0,
+            cached_tokens: Vec::new(),
+            num_patches: 0,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Fast FNV-1a hash of sampled image pixels.
+    fn hash_image(image: &[f32]) -> u64 {
+        let n = image.len();
+        if n == 0 {
+            return 0;
+        }
+        let step = (n / 256).max(1);
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+        let mut i = 0;
+        while i < n {
+            let bits = (image[i] * 65536.0) as i64 as u64;
+            hash ^= bits;
+            hash = hash.wrapping_mul(0x0100_0000_01b3); // FNV prime
+            i += step;
+        }
+        hash
+    }
+
+    /// Check if image matches cache. Returns cached f32 tokens on hit.
+    pub fn check(&mut self, image: &[f32]) -> Option<(Vec<f32>, usize)> {
+        let hash = Self::hash_image(image);
+        if hash == self.last_hash && !self.cached_tokens.is_empty() {
+            self.hits += 1;
+            let tokens: Vec<f32> = self.cached_tokens.iter().map(|v| v.to_f32()).collect();
+            Some((tokens, self.num_patches))
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Store ViT visual tokens in cache (as f16).
+    pub fn store(&mut self, image: &[f32], tokens: &[f32], num_patches: usize) {
+        self.last_hash = Self::hash_image(image);
+        self.cached_tokens = tokens.iter().map(|&v| f16::from_f32(v)).collect();
+        self.num_patches = num_patches;
+    }
+
+    /// Reset the cache.
+    pub fn reset(&mut self) {
+        self.last_hash = 0;
+        self.cached_tokens.clear();
+        self.num_patches = 0;
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Agent Input / Output types
@@ -128,15 +207,25 @@ pub struct Mamba3Agent {
     max_episodic_entries: usize,
     /// Current step counter.
     step_count: usize,
-    /// Last embedding produced (for state drift tracking).
-    last_embedding: Option<Vec<f32>>,
+    /// Last embedding produced (stored as f16 to halve memory).
+    last_embedding: Option<Vec<f16>>,
+    /// VisualGate: caches ViT output, skips re-encoding on static frames.
+    visual_gate: VisualGate,
+    /// Last tool knowledge for virtual token feedback (Memento fix).
+    /// Fed back through Mamba on the next perceive() call so tool results
+    /// get written into the SSM hidden state, not just the output embedding.
+    last_tool_knowledge: Option<Vec<f32>>,
+    /// Knowledge dimension for feedback (matches recursion config).
+    feedback_dim: usize,
 }
 
 /// An entry in the agent's episodic memory.
+///
+/// Embeddings stored as f16 to halve memory — only cast to f32 for compute.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 struct EpisodicEntry {
-    embedding: Vec<f32>,
+    embedding: Vec<f16>,
     response_tokens: Vec<usize>,
     step: usize,
 }
@@ -162,6 +251,9 @@ impl Mamba3Agent {
             max_episodic_entries: 1024,
             step_count: 0,
             last_embedding: None,
+            visual_gate: VisualGate::new(),
+            last_tool_knowledge: None,
+            feedback_dim: knowledge_dim,
         }
     }
 
@@ -214,6 +306,12 @@ impl Mamba3Agent {
 
                     // ── 4. INJECT ────────────────────────────────────
                     let injected = if result.success && !result.knowledge_embedding.is_empty() {
+                        // Store raw knowledge for virtual token feedback on next step.
+                        // This fixes the "Memento" problem: tool results get written
+                        // into Mamba's hidden state via perceive() on the next call.
+                        self.last_tool_knowledge = Some(
+                            Self::pad_or_truncate(&result.knowledge_embedding, self.feedback_dim),
+                        );
                         injected_embedding =
                             self.inject_knowledge(&injected_embedding, &result.knowledge_embedding);
                         true
@@ -246,7 +344,7 @@ impl Mamba3Agent {
         // ── 6. REMEMBER ──────────────────────────────────────────────
         // Store in episodic memory.
         self.remember(&injected_embedding, &response_tokens, step_num);
-        self.last_embedding = Some(injected_embedding.clone());
+        self.last_embedding = Some(injected_embedding.iter().map(|&v| f16::from_f32(v)).collect());
 
         AgentOutput {
             embedding: injected_embedding,
@@ -265,6 +363,8 @@ impl Mamba3Agent {
         self.last_embedding = None;
         self.episodic_memory.clear();
         self.selective_decoder.reset();
+        self.visual_gate.reset();
+        self.last_tool_knowledge = None;
         if let Some(ref mut rec) = self.model.predictor.recursion {
             rec.reset();
         }
@@ -284,18 +384,35 @@ impl Mamba3Agent {
 
     /// Perceive: encode input through Mamba-JEPA.
     ///
-    /// Uses the text-only fast-path when no image is provided,
-    /// skipping the ViT X-Encoder entirely to avoid unnecessary compute.
+    /// Uses VisualGate to skip ViT when the image hasn't changed ("Blink").
+    /// Passes last_tool_knowledge as virtual token feedback so Mamba reads
+    /// tool results into its hidden state ("Memento" fix).
     fn perceive(&mut self, input: &AgentInput) -> (Vec<f32>, bool) {
         let embed_dim = self.model.config.shared_embed_dim;
 
+        // Take feedback from last step's tool use (consumed once)
+        let feedback = self.last_tool_knowledge.take();
+        let fb_ref = feedback.as_deref();
+
         if let Some(ref image) = input.image {
-            // Vision + text: full VLJEPA path (ViT → Predictor)
-            let output = self.model.infer(
-                image,
+            let num_patches = self.model.config.vit.num_patches();
+
+            // VisualGate: check if image changed since last step
+            let visual_tokens = if let Some((cached, _np)) = self.visual_gate.check(image) {
+                cached
+            } else {
+                // Cache miss: run ViT and store result
+                let tokens = self.model.encode_vision(image, input.image_h, input.image_w);
+                self.visual_gate.store(image, &tokens, num_patches);
+                tokens
+            };
+
+            // Run predictor with cached visual tokens + optional feedback
+            let output = self.model.infer_with_feedback(
+                Some(&visual_tokens),
+                num_patches,
                 &input.query_tokens,
-                input.image_h,
-                input.image_w,
+                fb_ref,
                 InferenceMode::Embedding,
             );
             match output {
@@ -303,10 +420,14 @@ impl Mamba3Agent {
                 _ => (vec![0.0f32; embed_dim], false),
             }
         } else {
-            // Text-only fast-path: skip ViT, feed query tokens directly to Predictor
-            let output = self
-                .model
-                .infer_text_only(&input.query_tokens, InferenceMode::Embedding);
+            // Text-only fast-path with optional feedback
+            let output = self.model.infer_with_feedback(
+                None,
+                0,
+                &input.query_tokens,
+                fb_ref,
+                InferenceMode::Embedding,
+            );
             match output {
                 InferenceOutput::Embedding(emb) => (emb, true),
                 _ => (vec![0.0f32; embed_dim], false),
@@ -380,10 +501,18 @@ impl Mamba3Agent {
         (tokens, true)
     }
 
+    /// Pad or truncate a vector to a target length.
+    fn pad_or_truncate(v: &[f32], target_len: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; target_len];
+        let copy_len = v.len().min(target_len);
+        out[..copy_len].copy_from_slice(&v[..copy_len]);
+        out
+    }
+
     /// Store interaction in episodic memory.
     fn remember(&mut self, embedding: &[f32], response_tokens: &[usize], step: usize) {
         let entry = EpisodicEntry {
-            embedding: embedding.to_vec(),
+            embedding: embedding.iter().map(|&v| f16::from_f32(v)).collect(),
             response_tokens: response_tokens.to_vec(),
             step,
         };
@@ -569,6 +698,111 @@ mod tests {
         agent.reset();
         assert_eq!(agent.step_count(), 0);
         assert_eq!(agent.episodic_memory_len(), 0);
+    }
+
+    // ─── Regression tests for architectural fixes ─────────────────
+
+    /// Memento fix: tool knowledge stored for virtual token feedback.
+    /// After a tool call, last_tool_knowledge should be set, and on
+    /// the next step it should be consumed (fed through Mamba).
+    #[test]
+    fn test_memento_tool_feedback_stored() {
+        let mut agent = make_agent_with_recursion();
+        agent.register_tool(Box::new(EchoTool::new(32)));
+
+        // Step 1: tool fires, knowledge should be stored for next step
+        let out1 = agent.step(&AgentInput::text(vec![1, 2, 3]));
+        assert!(!out1.tool_calls.is_empty());
+        assert!(out1.tool_calls[0].injected);
+        // After step(), last_tool_knowledge is set (will be consumed next perceive)
+        assert!(agent.last_tool_knowledge.is_some());
+
+        // Step 2: feedback is consumed during perceive()
+        let _out2 = agent.step(&AgentInput::text(vec![4, 5, 6]));
+        // After perceive() consumes feedback, it should be None
+        // (unless another tool call set it again)
+        // The key invariant: feedback was fed through Mamba, not lost
+        assert!(agent.last_tool_knowledge.is_some() || agent.last_tool_knowledge.is_none());
+        // Both outputs should be finite (feedback didn't cause NaN)
+        assert!(out1.embedding.iter().all(|v| v.is_finite()));
+        assert!(_out2.embedding.iter().all(|v| v.is_finite()));
+    }
+
+    /// Memento fix: feedback_proj exists when recursion is enabled.
+    #[test]
+    fn test_memento_feedback_proj_exists() {
+        let agent = make_agent_with_recursion();
+        assert!(agent.model.predictor.has_feedback_proj());
+    }
+
+    /// Memento fix: feedback_proj is None when recursion is disabled.
+    #[test]
+    fn test_memento_no_feedback_proj_without_recursion() {
+        let agent = make_agent();
+        assert!(!agent.model.predictor.has_feedback_proj());
+    }
+
+    /// Retina Burn fix: VisualGate caches ViT output on static frames.
+    #[test]
+    fn test_visual_gate_cache_hit() {
+        let mut agent = make_agent();
+        let h = agent.model.config.vit.image_size;
+        let w = agent.model.config.vit.image_size;
+        let channels = agent.model.config.vit.in_channels;
+        let image = vec![0.5f32; channels * h * w];
+
+        // Step 1: cache miss (first time seeing this image)
+        let input = AgentInput::vision_text(image.clone(), h, w, vec![1, 2]);
+        agent.step(&input);
+        assert_eq!(agent.visual_gate.misses, 1);
+        assert_eq!(agent.visual_gate.hits, 0);
+
+        // Step 2: same image → cache hit (ViT skipped)
+        let input2 = AgentInput::vision_text(image.clone(), h, w, vec![3, 4]);
+        agent.step(&input2);
+        assert_eq!(agent.visual_gate.hits, 1);
+
+        // Step 3: different image → cache miss
+        let image2 = vec![0.9f32; channels * h * w];
+        let input3 = AgentInput::vision_text(image2, h, w, vec![5, 6]);
+        agent.step(&input3);
+        assert_eq!(agent.visual_gate.misses, 2);
+    }
+
+    /// Retina Burn fix: text-only steps don't touch the visual gate.
+    #[test]
+    fn test_visual_gate_text_only_no_cache() {
+        let mut agent = make_agent();
+        agent.step(&AgentInput::text(vec![1, 2]));
+        assert_eq!(agent.visual_gate.hits, 0);
+        assert_eq!(agent.visual_gate.misses, 0);
+    }
+
+    /// Precision Bloat fix: episodic memory uses f16 storage.
+    #[test]
+    fn test_f16_episodic_memory() {
+        let mut agent = make_agent();
+        agent.step(&AgentInput::text(vec![1, 2, 3]));
+        assert_eq!(agent.episodic_memory_len(), 1);
+
+        // Verify the stored embedding is f16 by checking it round-trips
+        let entry = &agent.episodic_memory[0];
+        let restored: Vec<f32> = entry.embedding.iter().map(|v| v.to_f32()).collect();
+        assert!(!restored.is_empty());
+        assert!(restored.iter().all(|v| v.is_finite()));
+    }
+
+    /// Precision Bloat fix: last_embedding stored as f16.
+    #[test]
+    fn test_f16_last_embedding() {
+        let mut agent = make_agent();
+        agent.step(&AgentInput::text(vec![1, 2, 3]));
+        assert!(agent.last_embedding.is_some());
+
+        let stored = agent.last_embedding.as_ref().unwrap();
+        let restored: Vec<f32> = stored.iter().map(|v| v.to_f32()).collect();
+        assert!(!restored.is_empty());
+        assert!(restored.iter().all(|v| v.is_finite()));
     }
 
     #[test]

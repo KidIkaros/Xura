@@ -225,6 +225,80 @@ impl Mamba3Jepa {
         }
     }
 
+    /// Encode visual input through ViT only, returning raw visual tokens.
+    ///
+    /// This is the "perception" step that can be cached by the agent's
+    /// VisualGate when the input image hasn't changed between steps.
+    ///
+    /// # Returns
+    /// Visual tokens: shape (1 * num_patches, vision_dim) flattened.
+    pub fn encode_vision(&self, image: &[f32], h: usize, w: usize) -> Vec<f32> {
+        self.x_encoder.forward_patches(image, 1, h, w)
+    }
+
+    /// Inference with pre-encoded visual tokens and optional tool feedback.
+    ///
+    /// This is the main inference path for the agent, combining:
+    /// - **VisualGate**: accepts cached ViT output (skip re-encoding static frames)
+    /// - **Virtual Token Feedback**: injects prior tool knowledge into Mamba state
+    ///
+    /// # Arguments
+    /// - `visual_tokens`: pre-encoded ViT output, or None for text-only
+    /// - `num_patches`: number of visual patches (0 if text-only)
+    /// - `query_tokens`: query token IDs
+    /// - `feedback`: optional tool knowledge vector for virtual token injection
+    /// - `mode`: embedding or decode
+    pub fn infer_with_feedback(
+        &mut self,
+        visual_tokens: Option<&[f32]>,
+        num_patches: usize,
+        query_tokens: &[usize],
+        feedback: Option<&[f32]>,
+        mode: InferenceMode,
+    ) -> InferenceOutput {
+        let batch = 1;
+        let n_qry = query_tokens.len();
+
+        // Embed query tokens
+        let qry_dm = self.config.y_encoder.d_model;
+        let query_embeds = embed_tokens(
+            query_tokens,
+            &self.y_encoder.backbone.embedding,
+            qry_dm,
+            n_qry,
+        );
+
+        // Predictor with feedback (visual or text-only)
+        let predicted = if let Some(vis_tokens) = visual_tokens {
+            self.predictor.forward_with_feedback(
+                vis_tokens,
+                &query_embeds,
+                feedback,
+                batch,
+                num_patches,
+                n_qry,
+            )
+        } else {
+            self.predictor.forward_text_only_with_feedback(
+                &query_embeds,
+                feedback,
+                batch,
+                n_qry,
+            )
+        };
+
+        match mode {
+            InferenceMode::Embedding => InferenceOutput::Embedding(predicted),
+            InferenceMode::Decode {
+                max_tokens,
+                bos_token,
+            } => {
+                let tokens = self.y_decoder.generate(&predicted, max_tokens, bos_token);
+                InferenceOutput::Tokens(tokens)
+            }
+        }
+    }
+
     /// Classify by comparing predicted embedding against candidate embeddings.
     ///
     /// # Arguments
