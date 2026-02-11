@@ -69,6 +69,10 @@ pub struct Mamba3Predictor {
     pub recursion: Option<RecursionLayer>,
     /// Optional Adaptive Neural Gating Network for input filtering.
     pub angn: Option<AdaptiveNeuralGate>,
+    /// Projects tool feedback knowledge → d_model for virtual token injection.
+    /// Created when recursion is enabled, so tool results can be fed back
+    /// through Mamba's SSM scan on the next step (fixes the "Memento" bug).
+    feedback_proj: Option<Linear>,
 }
 
 impl Mamba3Predictor {
@@ -90,6 +94,7 @@ impl Mamba3Predictor {
             pred_head,
             recursion: None,
             angn: None,
+            feedback_proj: None,
         }
     }
 
@@ -113,7 +118,8 @@ impl Mamba3Predictor {
                 );
                 rec_config.inject_after_layer = clamped;
             }
-            predictor.recursion = Some(RecursionLayer::new(rec_config, config.d_model));
+            predictor.recursion = Some(RecursionLayer::new(rec_config.clone(), config.d_model));
+            predictor.feedback_proj = Some(Linear::new(rec_config.knowledge_dim, config.d_model));
         }
         predictor
     }
@@ -141,7 +147,8 @@ impl Mamba3Predictor {
                 );
                 rec_config.inject_after_layer = clamped;
             }
-            predictor.recursion = Some(RecursionLayer::new(rec_config, config.d_model));
+            predictor.recursion = Some(RecursionLayer::new(rec_config.clone(), config.d_model));
+            predictor.feedback_proj = Some(Linear::new(rec_config.knowledge_dim, config.d_model));
         }
 
         // Wire ANGN
@@ -254,6 +261,150 @@ impl Mamba3Predictor {
         }
 
         // Prediction head → L2-normalize
+        let projected = self.pred_head.forward(&pooled, batch);
+        l2_normalize(&projected, batch, self.config.embed_dim)
+    }
+
+    /// Whether the predictor has a feedback projection (for virtual token feedback).
+    pub fn has_feedback_proj(&self) -> bool {
+        self.feedback_proj.is_some()
+    }
+
+    /// Forward pass with optional virtual token feedback from prior tool use.
+    ///
+    /// When `feedback` is provided, it is projected via `feedback_proj` and
+    /// prepended as a virtual token to the sequence. Mamba's SSM scan then
+    /// "reads" this token into hidden state, giving the model persistent
+    /// memory of tool results (fixes the "Memento" problem).
+    ///
+    /// # Arguments
+    /// - `visual_tokens`: shape (batch * n_vis, vision_dim) from X-Encoder
+    /// - `query_embeds`: shape (batch * n_qry, query_embed_dim)
+    /// - `feedback`: optional knowledge vector from previous tool call, shape (feedback_dim,)
+    /// - `batch`: batch size
+    /// - `n_vis`: visual tokens per sample
+    /// - `n_qry`: query tokens per sample
+    pub fn forward_with_feedback(
+        &mut self,
+        visual_tokens: &[f32],
+        query_embeds: &[f32],
+        feedback: Option<&[f32]>,
+        batch: usize,
+        n_vis: usize,
+        n_qry: usize,
+    ) -> Vec<f32> {
+        let dm = self.config.d_model;
+
+        // Project inputs to d_model
+        let vis_proj = self.vision_proj.forward(visual_tokens, batch * n_vis);
+        let qry_proj = self.query_proj.forward(query_embeds, batch * n_qry);
+
+        // Project feedback to a virtual token if available
+        let (fb_token, n_fb) = match (feedback, &self.feedback_proj) {
+            (Some(fb), Some(proj)) => (Some(proj.forward(fb, 1)), 1usize),
+            _ => (None, 0usize),
+        };
+
+        let seq_len = n_fb + n_vis + n_qry;
+
+        // Concatenate: [feedback_token; visual_tokens; query_tokens]
+        let mut concat = vec![0.0f32; batch * seq_len * dm];
+        for b in 0..batch {
+            let dst = b * seq_len * dm;
+            let mut offset = 0;
+
+            // Virtual feedback token (broadcast to all batch items)
+            if let Some(ref fb) = fb_token {
+                concat[dst..dst + dm].copy_from_slice(&fb[..dm]);
+                offset += dm;
+            }
+
+            // Visual tokens
+            let vis_src = b * n_vis * dm;
+            concat[dst + offset..dst + offset + n_vis * dm]
+                .copy_from_slice(&vis_proj[vis_src..vis_src + n_vis * dm]);
+            offset += n_vis * dm;
+
+            // Query tokens
+            let qry_src = b * n_qry * dm;
+            concat[dst + offset..dst + offset + n_qry * dm]
+                .copy_from_slice(&qry_proj[qry_src..qry_src + n_qry * dm]);
+        }
+
+        // Feed through backbone
+        let hidden = self.forward_backbone(&concat, batch, seq_len);
+
+        // Average pool → (batch, d_model)
+        let mut pooled = vec![0.0f32; batch * dm];
+        for b in 0..batch {
+            for pos in 0..seq_len {
+                for d in 0..dm {
+                    pooled[b * dm + d] += hidden[b * seq_len * dm + pos * dm + d];
+                }
+            }
+            let inv_len = 1.0 / seq_len as f32;
+            for d in 0..dm {
+                pooled[b * dm + d] *= inv_len;
+            }
+        }
+
+        // Prediction head → L2-normalize
+        let projected = self.pred_head.forward(&pooled, batch);
+        l2_normalize(&projected, batch, self.config.embed_dim)
+    }
+
+    /// Text-only forward pass with optional virtual token feedback.
+    ///
+    /// Same as `forward_text_only` but prepends a feedback virtual token
+    /// when available, so Mamba reads tool results into state.
+    pub fn forward_text_only_with_feedback(
+        &mut self,
+        query_embeds: &[f32],
+        feedback: Option<&[f32]>,
+        batch: usize,
+        n_qry: usize,
+    ) -> Vec<f32> {
+        let dm = self.config.d_model;
+
+        let qry_proj = self.query_proj.forward(query_embeds, batch * n_qry);
+
+        let (fb_token, n_fb) = match (feedback, &self.feedback_proj) {
+            (Some(fb), Some(proj)) => (Some(proj.forward(fb, 1)), 1usize),
+            _ => (None, 0usize),
+        };
+
+        let seq_len = n_fb + n_qry;
+
+        let mut concat = vec![0.0f32; batch * seq_len * dm];
+        for b in 0..batch {
+            let dst = b * seq_len * dm;
+            let mut offset = 0;
+
+            if let Some(ref fb) = fb_token {
+                concat[dst..dst + dm].copy_from_slice(&fb[..dm]);
+                offset += dm;
+            }
+
+            let qry_src = b * n_qry * dm;
+            concat[dst + offset..dst + offset + n_qry * dm]
+                .copy_from_slice(&qry_proj[qry_src..qry_src + n_qry * dm]);
+        }
+
+        let hidden = self.forward_backbone(&concat, batch, seq_len);
+
+        let mut pooled = vec![0.0f32; batch * dm];
+        for b in 0..batch {
+            for pos in 0..seq_len {
+                for d in 0..dm {
+                    pooled[b * dm + d] += hidden[b * seq_len * dm + pos * dm + d];
+                }
+            }
+            let inv_len = 1.0 / seq_len as f32;
+            for d in 0..dm {
+                pooled[b * dm + d] *= inv_len;
+            }
+        }
+
         let projected = self.pred_head.forward(&pooled, batch);
         l2_normalize(&projected, batch, self.config.embed_dim)
     }
