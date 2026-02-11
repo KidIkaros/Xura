@@ -341,12 +341,16 @@ impl RecursionConfig {
 
 /// Configuration for the disk-backed VisualMemory system.
 ///
+/// Memory is **always on** — it is the foundation of the World Model, not
+/// an optional plugin. Without memory the agent lives in an "Eternal Now"
+/// and cannot learn from its past.
+///
 /// Controls the dual-stream recording: ffmpeg video pipe + bincode index.
+/// All data stays **local only** — never uploaded, never leaves the machine.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VisualMemoryConfig {
-    /// Whether disk-backed memory is enabled (false = no files, no ffmpeg).
-    pub enabled: bool,
     /// Output directory for history.mp4 and memory.index.
+    /// Default: `~/.xura/memory` (resolved at runtime).
     pub output_dir: String,
     /// Path to ffmpeg binary (default: "ffmpeg", assumes it's on PATH).
     pub ffmpeg_path: String,
@@ -360,19 +364,56 @@ pub struct VisualMemoryConfig {
     pub codec: String,
     /// CRF quality (0 = lossless, 23 = default, 51 = worst). Lower = bigger file.
     pub crf: u8,
+    /// Rolling retention window in days. Files older than this are auto-deleted.
+    /// 0 = keep forever.
+    pub max_retention_days: u32,
+    /// Maximum total storage in bytes for memory files.
+    /// 0 = unlimited. Default: 10 GB.
+    pub max_storage_bytes: u64,
+}
+
+impl VisualMemoryConfig {
+    /// Resolve the output directory, expanding `~` to the user's home dir.
+    pub fn resolved_output_dir(&self) -> String {
+        if self.output_dir.starts_with("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return format!("{}/{}", home.to_string_lossy(), &self.output_dir[2..]);
+            }
+        }
+        self.output_dir.clone()
+    }
+
+    /// Create a test config pointing to a unique temporary directory.
+    ///
+    /// Each call gets a fresh dir to prevent test interference.
+    pub fn test(name: &str) -> Self {
+        let dir = std::env::temp_dir()
+            .join(format!("xura_test_memory_{}", name))
+            .to_string_lossy()
+            .into_owned();
+        // Clean up any previous test run
+        let _ = std::fs::remove_dir_all(&dir);
+        Self {
+            output_dir: dir,
+            max_retention_days: 0,   // no cleanup in tests
+            max_storage_bytes: 0,    // unlimited in tests
+            ..Default::default()
+        }
+    }
 }
 
 impl Default for VisualMemoryConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            output_dir: "agent_memory".into(),
+            output_dir: "~/.xura/memory".into(),
             ffmpeg_path: "ffmpeg".into(),
             frame_width: 640,
             frame_height: 480,
             fps: 10,
             codec: "libx264".into(),
             crf: 23,
+            max_retention_days: 7,
+            max_storage_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
         }
     }
 }
