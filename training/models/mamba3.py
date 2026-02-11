@@ -207,7 +207,8 @@ class Mamba3Layer(nn.Module):
             h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + input_drive)
             h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
 
-            # Output: y = C * h + D * x
+            # Output: y = C * h + D * x (clamp h to bound output magnitude)
+            h = h.clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
             y_t = torch.einsum("bhn,bhn->bh", C_t, h)  # (B, nheads)
             y_t = y_t + self.D.unsqueeze(0) * x_t.mean(dim=-1)  # D skip connection
             outputs.append(y_t)

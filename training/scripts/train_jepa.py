@@ -110,7 +110,9 @@ class ImageTextDataset(Dataset):
             ])
             img = Image.open(sample["image"]).convert("RGB")
             image_tensor = transform(img)
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to load image {sample.get('image', '?')}: {e}", stacklevel=2)
             image_tensor = torch.randn(3, self.image_size, self.image_size)
 
         # Load text tokens (placeholder — replace with actual tokenizer)
@@ -121,7 +123,9 @@ class ImageTextDataset(Dataset):
             tokens = [ord(c) % self.vocab_size for c in text[:self.max_seq_len]]
             tokens = tokens + [0] * (self.max_seq_len - len(tokens))
             token_tensor = torch.tensor(tokens, dtype=torch.long)
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to load text {sample.get('text', '?')}: {e}", stacklevel=2)
             token_tensor = torch.randint(0, self.vocab_size, (self.max_seq_len,))
 
         return {
