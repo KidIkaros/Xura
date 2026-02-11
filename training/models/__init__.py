@@ -1,4 +1,4 @@
-"""PyTorch model mirrors for Kore Mamba3-JEPA training.
+"""PyTorch model mirrors for Xura Mamba3-JEPA training.
 
 These modules replicate the Rust architecture exactly so that weights
 can be trained in PyTorch and exported to safetensors for Rust inference.

@@ -17,7 +17,7 @@ import torch.nn as nn
 
 @dataclass
 class VitConfig:
-    """Mirrors kore-vljepa's VitConfig."""
+    """Mirrors xura-vljepa's VitConfig."""
     patch_size: int = 14
     image_size: int = 224
     d_model: int = 1024
@@ -50,7 +50,7 @@ class VisionEncoder(nn.Module):
     and keeps all parameters frozen. Output is patch-level features:
       (batch, num_patches, d_model)
 
-    Mirrors: kore-vljepa's VisionEncoder.
+    Mirrors: xura-vljepa's VisionEncoder.
     """
 
     def __init__(self, config: VitConfig):

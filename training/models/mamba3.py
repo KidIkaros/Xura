@@ -1,4 +1,4 @@
-"""Pure-PyTorch Mamba-3 SSM layer — mirrors kore-mamba's MixerModel.
+"""Pure-PyTorch Mamba-3 SSM layer — mirrors xura-mamba's MixerModel.
 
 This is a simplified but architecturally faithful implementation of the
 Mamba-3 selective state space model with:
@@ -20,7 +20,6 @@ Weight key mapping (this module → safetensors):
   backbone.final_norm.weight           → final_norm.weight
 """
 
-import math
 from dataclasses import dataclass
 
 import torch
@@ -31,7 +30,7 @@ from einops import rearrange
 
 @dataclass
 class Mamba3Config:
-    """Mirrors kore_mamba::MambaConfig."""
+    """Mirrors xura_mamba::MambaConfig."""
     d_model: int = 1024
     n_layer: int = 12
     d_state: int = 128
@@ -42,6 +41,12 @@ class Mamba3Config:
     use_rope: bool = True
     norm_epsilon: float = 1e-5
     vocab_size: int = 32000  # Only used by LM head, not predictor
+
+
+# Numerical stability constants for SSM discretization
+_A_LOG_CLAMP_MAX = 5.0       # Prevents exp(A_log) from exploding
+_A_DT_CLAMP_MIN = -20.0      # Floor for exp(A * dt) in ZOH discretization
+_EULER_CLAMP_ABS = 20.0       # Symmetric clamp for A * h in Euler step
 
 
 class RMSNorm(nn.Module):
@@ -90,7 +95,7 @@ class Mamba3Layer(nn.Module):
       x_ssm → SSM scan with complex A, trapezoidal discretization
       output = out_proj(x_ssm * silu(z))
 
-    Mirrors: kore_mamba::Mamba3 struct.
+    Mirrors: xura_mamba::Mamba3 struct.
     """
 
     def __init__(self, config: Mamba3Config, layer_idx: int = 0):
@@ -165,7 +170,7 @@ class Mamba3Layer(nn.Module):
         dt = F.softplus(dt_raw + self.dt_bias)  # (batch, seq_len, nheads)
 
         # SSM: A (negative for stability), clamped to prevent overflow
-        A = -torch.exp(self.A_log.clamp(max=5.0))  # (nheads,)
+        A = -torch.exp(self.A_log.clamp(max=_A_LOG_CLAMP_MAX))  # (nheads,)
 
         # Trapezoidal discretization:
         #   A_bar = exp(A * dt)  [ZOH part]
@@ -190,14 +195,14 @@ class Mamba3Layer(nn.Module):
             dt_t = dt[:, t].unsqueeze(-1)  # (B, nheads, 1)
 
             # Trapezoidal discretization (clamp exponent for stability)
-            A_disc = torch.exp((A.unsqueeze(0).unsqueeze(-1) * dt_t).clamp(-20, 0))  # (B, nheads, 1)
+            A_disc = torch.exp((A.unsqueeze(0).unsqueeze(-1) * dt_t).clamp(_A_DT_CLAMP_MIN, 0))  # (B, nheads, 1)
 
             # State update: h = A_bar * h + dt * B * x (simplified)
             # Input contribution: use mean of x across headdim as scalar modulator
             x_scalar = x_t.mean(dim=-1, keepdim=True)  # (B, nheads, 1)
             alpha = self.trapezoidal_alpha
             h_new_zoh = A_disc * h + dt_t * B_t * x_scalar
-            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-20, 20) + B_t * x_scalar)
+            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_EULER_CLAMP_ABS, _EULER_CLAMP_ABS) + B_t * x_scalar)
             h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
 
             # Output: y = C * h + D * x
@@ -220,7 +225,7 @@ class Mamba3Layer(nn.Module):
 class Mamba3Backbone(nn.Module):
     """Stack of Mamba-3 layers with pre-norm (RMSNorm) and residual connections.
 
-    Mirrors: kore_mamba::MixerModel (without embedding layer).
+    Mirrors: xura_mamba::MixerModel (without embedding layer).
     """
 
     def __init__(self, config: Mamba3Config):

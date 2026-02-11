@@ -1,4 +1,4 @@
-"""Adaptive Neural Gating Network — PyTorch mirror of kore-vljepa's angn.rs.
+"""Adaptive Neural Gating Network — PyTorch mirror of xura-vljepa's angn.rs.
 
 Multiplicative input gate for Mamba-3 backbone layers:
   gate = σ(W_gate · h + b_gate)
@@ -17,7 +17,7 @@ import torch.nn as nn
 
 @dataclass
 class ANGNConfig:
-    """Mirrors kore-vljepa's ANGNConfig."""
+    """Mirrors xura-vljepa's ANGNConfig."""
     enabled: bool = False
     d_model: int = 64
     n_gates: int = 0

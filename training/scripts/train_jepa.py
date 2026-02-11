@@ -25,7 +25,6 @@ Loss:          InfoNCE (symmetric contrastive)
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -370,7 +369,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
         drop_last=True,
     )
 

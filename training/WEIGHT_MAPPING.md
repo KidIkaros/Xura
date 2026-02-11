@@ -1,7 +1,7 @@
 # Weight Mapping: PyTorch → safetensors → Rust
 
 This document defines the exact key mapping between PyTorch module paths
-and the safetensors keys that the Rust `kore-vljepa` loader expects.
+and the safetensors keys that the Rust `xura-vljepa` loader expects.
 
 ## Overview
 
@@ -9,7 +9,7 @@ and the safetensors keys that the Rust `kore-vljepa` loader expects.
 PyTorch training → .pt checkpoint → export_weights.py → .safetensors → Rust loader
 ```
 
-The Rust loader (`kore-vljepa/src/loader.rs`) reads flat safetensors keys.
+The Rust loader (`xura-vljepa/src/loader.rs`) reads flat safetensors keys.
 PyTorch produces hierarchical keys. The export utility handles remapping.
 
 ---

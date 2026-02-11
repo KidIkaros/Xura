@@ -34,7 +34,7 @@ from utils.export_weights import export_to_safetensors
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Confusion Probe — mirrors kore-vljepa's ConfusionMonitor
+# Confusion Probe — mirrors xura-vljepa's ConfusionMonitor
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ConfusionProbe(nn.Module):
