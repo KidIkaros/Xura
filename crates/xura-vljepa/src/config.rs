@@ -339,6 +339,44 @@ impl RecursionConfig {
     }
 }
 
+/// Configuration for the disk-backed VisualMemory system.
+///
+/// Controls the dual-stream recording: ffmpeg video pipe + bincode index.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VisualMemoryConfig {
+    /// Whether disk-backed memory is enabled (false = no files, no ffmpeg).
+    pub enabled: bool,
+    /// Output directory for history.mp4 and memory.index.
+    pub output_dir: String,
+    /// Path to ffmpeg binary (default: "ffmpeg", assumes it's on PATH).
+    pub ffmpeg_path: String,
+    /// Video frame width (input images will be interpreted at this size).
+    pub frame_width: usize,
+    /// Video frame height.
+    pub frame_height: usize,
+    /// Video framerate (frames per second for the output MP4).
+    pub fps: usize,
+    /// H.264/H.265 codec name for ffmpeg (e.g. "libx264", "libx265").
+    pub codec: String,
+    /// CRF quality (0 = lossless, 23 = default, 51 = worst). Lower = bigger file.
+    pub crf: u8,
+}
+
+impl Default for VisualMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output_dir: "agent_memory".into(),
+            ffmpeg_path: "ffmpeg".into(),
+            frame_width: 640,
+            frame_height: 480,
+            fps: 10,
+            codec: "libx264".into(),
+            crf: 23,
+        }
+    }
+}
+
 /// Agent configuration for the SSD (State-Space Delegation) loop.
 ///
 /// Controls the full agent perception → delegation → action cycle:
@@ -365,6 +403,8 @@ pub struct AgentConfig {
     pub online_learning_temperature: f32,
     /// Whether to persist state across step() calls (true = never reset Mamba state).
     pub persistent_state: bool,
+    /// Disk-backed VisualMemory configuration.
+    pub memory: VisualMemoryConfig,
 }
 
 impl Default for AgentConfig {
@@ -378,6 +418,7 @@ impl Default for AgentConfig {
             selective_decode: super::selective_decode::SelectiveDecodeConfig::default(),
             online_learning_temperature: 0.0,
             persistent_state: true,
+            memory: VisualMemoryConfig::default(),
         }
     }
 }
@@ -394,6 +435,7 @@ impl AgentConfig {
             selective_decode: super::selective_decode::SelectiveDecodeConfig::default(),
             online_learning_temperature: 0.0,
             persistent_state: true,
+            memory: VisualMemoryConfig::default(),
         }
     }
 }
