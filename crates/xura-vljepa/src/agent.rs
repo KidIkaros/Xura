@@ -74,7 +74,8 @@ impl VisualGate {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
         let mut i = 0;
         while i < n {
-            let bits = (image[i] * 65536.0) as i64 as u64;
+            let clamped = image[i].clamp(-1.0, 1.0);
+            let bits = (clamped * 65536.0) as i64 as u64;
             hash ^= bits;
             hash = hash.wrapping_mul(0x0100_0000_01b3); // FNV prime
             i += step;
@@ -717,15 +718,15 @@ mod tests {
         // After step(), last_tool_knowledge is set (will be consumed next perceive)
         assert!(agent.last_tool_knowledge.is_some());
 
-        // Step 2: feedback is consumed during perceive()
-        let _out2 = agent.step(&AgentInput::text(vec![4, 5, 6]));
-        // After perceive() consumes feedback, it should be None
-        // (unless another tool call set it again)
-        // The key invariant: feedback was fed through Mamba, not lost
-        assert!(agent.last_tool_knowledge.is_some() || agent.last_tool_knowledge.is_none());
+        // Step 2: feedback is consumed during perceive(), influencing the output.
+        // Same query tokens as step 1, but the virtual feedback token should
+        // cause a different embedding — proving the tool result persisted.
+        let out2 = agent.step(&AgentInput::text(vec![1, 2, 3]));
         // Both outputs should be finite (feedback didn't cause NaN)
         assert!(out1.embedding.iter().all(|v| v.is_finite()));
-        assert!(_out2.embedding.iter().all(|v| v.is_finite()));
+        assert!(out2.embedding.iter().all(|v| v.is_finite()));
+        // Embedding must differ — the feedback virtual token changed the result
+        assert_ne!(out1.embedding, out2.embedding, "feedback should influence step 2 embedding");
     }
 
     /// Memento fix: feedback_proj exists when recursion is enabled.
