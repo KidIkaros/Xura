@@ -203,8 +203,9 @@ pub struct Mamba3Agent {
     tool_injector: StateInjector,
     /// Selective decoder for streaming output.
     selective_decoder: SelectiveDecoder,
-    /// Disk-backed dual-stream memory (None = disabled, e.g. in tests).
-    memory: Option<VisualMemory>,
+    /// Disk-backed dual-stream memory — always on.
+    /// Memory is the foundation of the World Model, not an optional plugin.
+    memory: VisualMemory,
     /// Current step counter.
     step_count: usize,
     /// Last embedding produced (stored as f16 to halve memory).
@@ -230,18 +231,10 @@ impl Mamba3Agent {
         let tool_injector = StateInjector::new(model_config.shared_embed_dim, knowledge_dim);
         let model = Mamba3Jepa::new(model_config);
 
-        // Open disk-backed memory if enabled in config
-        let memory = if agent_config.memory.enabled {
-            match VisualMemory::open_index_only(agent_config.memory.clone()) {
-                Ok(mem) => Some(mem),
-                Err(e) => {
-                    eprintln!("[Mamba3Agent] WARNING: failed to open VisualMemory: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // Memory is always on — it is the foundation of the World Model.
+        // Without memory the agent lives in an "Eternal Now" and cannot learn.
+        let memory = VisualMemory::open_index_only(agent_config.memory.clone())
+            .expect("[Xura] FATAL: failed to open VisualMemory — cannot start agent without memory");
 
         Self {
             model,
@@ -363,10 +356,8 @@ impl Mamba3Agent {
         self.step_count = 0;
         self.last_embedding = None;
         // Flush disk memory before resetting
-        if let Some(ref mut mem) = self.memory {
-            if let Err(e) = mem.flush() {
-                eprintln!("[Mamba3Agent] WARNING: memory flush on reset failed: {}", e);
-            }
+        if let Err(e) = self.memory.flush() {
+            eprintln!("[Xura] WARNING: memory flush on reset failed: {}", e);
         }
         self.selective_decoder.reset();
         self.visual_gate.reset();
@@ -382,10 +373,8 @@ impl Mamba3Agent {
     }
 
     /// Get the number of entries written to disk-backed memory.
-    ///
-    /// Returns 0 if memory is disabled.
     pub fn memory_entry_count(&self) -> u64 {
-        self.memory.as_ref().map_or(0, |m| m.index_count())
+        self.memory.index_count()
     }
 
     // ─── Internal methods ────────────────────────────────────────────
@@ -520,7 +509,7 @@ impl Mamba3Agent {
     /// Store interaction in disk-backed memory.
     ///
     /// Writes the embedding, response tokens, and (optionally) a video frame
-    /// to the dual-stream memory system. No-op if memory is disabled.
+    /// to the dual-stream memory system.
     fn remember(
         &mut self,
         input: &AgentInput,
@@ -528,13 +517,8 @@ impl Mamba3Agent {
         response_tokens: &[usize],
         step: usize,
     ) {
-        let mem = match self.memory.as_mut() {
-            Some(m) => m,
-            None => return,
-        };
-
         // Convert f32 image to RGB bytes for ffmpeg (if video stream is active)
-        let rgb_bytes = if mem.has_video() {
+        let rgb_bytes = if self.memory.has_video() {
             input.image.as_ref().map(|img| {
                 let c = self.model.config.vit.in_channels;
                 f32_image_to_rgb_bytes(img, c, input.image_h, input.image_w)
@@ -543,13 +527,13 @@ impl Mamba3Agent {
             None
         };
 
-        if let Err(e) = mem.append(
+        if let Err(e) = self.memory.append(
             rgb_bytes.as_deref(),
             embedding,
             response_tokens,
             step,
         ) {
-            eprintln!("[Mamba3Agent] WARNING: memory append failed at step {}: {}", step, e);
+            eprintln!("[Xura] WARNING: memory append failed at step {}: {}", step, e);
         }
     }
 }
@@ -561,13 +545,23 @@ impl Mamba3Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, Mamba3JepaConfig, RecursionConfig};
+    use crate::config::{AgentConfig, Mamba3JepaConfig, RecursionConfig, VisualMemoryConfig};
     use crate::tools::{EchoTool, MemorySearchTool};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Monotonic counter to give each test a unique memory directory.
+    static TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_agent_config() -> AgentConfig {
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let mut cfg = AgentConfig::tiny();
+        cfg.memory = VisualMemoryConfig::test(&format!("agent_{}", id));
+        cfg
+    }
 
     fn make_agent() -> Mamba3Agent {
         let model_config = Mamba3JepaConfig::tiny();
-        let agent_config = AgentConfig::tiny();
-        Mamba3Agent::new(model_config, agent_config)
+        Mamba3Agent::new(model_config, test_agent_config())
     }
 
     fn make_agent_with_recursion() -> Mamba3Agent {
@@ -581,8 +575,7 @@ mod tests {
             max_depth: 1,
             smoothing: 1.0,
         };
-        let agent_config = AgentConfig::tiny();
-        Mamba3Agent::new(model_config, agent_config)
+        Mamba3Agent::new(model_config, test_agent_config())
     }
 
     #[test]
@@ -603,6 +596,7 @@ mod tests {
         assert!(output.did_decode);
         assert!(output.tool_calls.is_empty());
         assert_eq!(agent.step_count(), 1);
+        assert_eq!(agent.memory_entry_count(), 1);
     }
 
     #[test]
@@ -632,6 +626,7 @@ mod tests {
         }
 
         assert_eq!(agent.step_count(), 5);
+        assert_eq!(agent.memory_entry_count(), 5);
     }
 
     #[test]
@@ -699,7 +694,7 @@ mod tests {
     #[test]
     fn test_agent_selective_decoding() {
         let model_config = Mamba3JepaConfig::tiny();
-        let mut agent_config = AgentConfig::tiny();
+        let mut agent_config = test_agent_config();
         agent_config.selective_decoding = true;
         agent_config.selective_decode.drift_threshold = 999.0; // never decode
 

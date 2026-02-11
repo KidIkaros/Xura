@@ -120,17 +120,36 @@ impl VisualMemory {
     /// - `config`: memory configuration
     /// - `enable_video`: whether to spawn ffmpeg (false for text-only agents)
     pub fn open(config: VisualMemoryConfig, enable_video: bool) -> io::Result<Self> {
+        let output_dir = config.resolved_output_dir();
+
         // Create output directory
-        fs::create_dir_all(&config.output_dir)?;
+        fs::create_dir_all(&output_dir)?;
+
+        // Run retention cleanup before starting a new session
+        if let Err(e) = enforce_retention(&output_dir, &config) {
+            eprintln!("[Xura] WARNING: retention cleanup failed: {}", e);
+        }
+
+        // "Red Light" — transparent startup message
+        if enable_video {
+            eprintln!(
+                "[Xura] Recording visual history to {}/history.mp4 (Local Only)",
+                output_dir
+            );
+        }
+        eprintln!(
+            "[Xura] Memory index: {}/memory.index (Local Only, {}-day rolling window)",
+            output_dir, config.max_retention_days
+        );
 
         // Open index file
-        let index_path = format!("{}/memory.index", config.output_dir);
+        let index_path = format!("{}/memory.index", output_dir);
         let index_file = File::create(&index_path)?;
         let index_writer = BufWriter::new(index_file);
 
         // Spawn ffmpeg if video is enabled
         let (ffmpeg_child, video_pipe, ffmpeg_stderr) = if enable_video {
-            let video_path = format!("{}/history.mp4", config.output_dir);
+            let video_path = format!("{}/history.mp4", output_dir);
             let mut child = Command::new(&config.ffmpeg_path)
                 .args([
                     "-y",                  // overwrite output
@@ -333,6 +352,93 @@ pub fn read_index(path: &str) -> io::Result<Vec<IndexEntry>> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Retention policy — auto-delete old memory files
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Enforce retention policy: delete files older than `max_retention_days`
+/// and trim oldest files if total size exceeds `max_storage_bytes`.
+///
+/// Scans for `memory_*.index` and `history_*.mp4` files in the output dir.
+/// The current session's `memory.index` and `history.mp4` are not touched
+/// (they haven't been rotated yet).
+fn enforce_retention(output_dir: &str, config: &VisualMemoryConfig) -> io::Result<()> {
+    use std::time::{Duration, SystemTime};
+
+    let max_age = if config.max_retention_days > 0 {
+        Some(Duration::from_secs(config.max_retention_days as u64 * 86400))
+    } else {
+        None
+    };
+
+    let now = SystemTime::now();
+    let mut files: Vec<(std::path::PathBuf, u64, SystemTime)> = Vec::new();
+
+    for entry in fs::read_dir(output_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        // Only manage our own files
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.ends_with(".index") && !name.ends_with(".mp4") {
+            continue;
+        }
+        // Don't touch the active session files
+        if name == "memory.index" || name == "history.mp4" {
+            continue;
+        }
+
+        let meta = entry.metadata()?;
+        let modified = meta.modified().unwrap_or(now);
+        files.push((path, meta.len(), modified));
+    }
+
+    // Phase 1: delete files older than max_retention_days
+    if let Some(max_age) = max_age {
+        files.retain(|(_path, _size, modified)| {
+            if let Ok(age) = now.duration_since(*modified) {
+                if age > max_age {
+                    let path = &_path;
+                    if let Err(e) = fs::remove_file(path) {
+                        eprintln!("[Xura] WARNING: failed to delete expired file {:?}: {}", path, e);
+                    } else {
+                        eprintln!("[Xura] Retention: deleted expired {:?}", path.file_name().unwrap_or_default());
+                    }
+                    return false; // removed
+                }
+            }
+            true
+        });
+    }
+
+    // Phase 2: if total size exceeds max_storage_bytes, delete oldest first
+    if config.max_storage_bytes > 0 {
+        let total_size: u64 = files.iter().map(|(_, s, _)| *s).sum();
+        if total_size > config.max_storage_bytes {
+            // Sort oldest first
+            files.sort_by_key(|(_, _, m)| *m);
+            let mut freed: u64 = 0;
+            let overage = total_size - config.max_storage_bytes;
+            for (path, size, _) in &files {
+                if freed >= overage {
+                    break;
+                }
+                if let Err(e) = fs::remove_file(path) {
+                    eprintln!("[Xura] WARNING: failed to delete {:?} for storage limit: {}", path, e);
+                } else {
+                    eprintln!("[Xura] Retention: deleted {:?} to free space", path.file_name().unwrap_or_default());
+                    freed += size;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Utility: convert f32 image to raw RGB bytes
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -409,7 +515,6 @@ mod tests {
     fn test_index_only_append_and_read() {
         let dir = temp_dir("index_only");
         let config = VisualMemoryConfig {
-            enabled: true,
             output_dir: dir.clone(),
             ..Default::default()
         };
@@ -444,7 +549,6 @@ mod tests {
     fn test_frame_count_sync() {
         let dir = temp_dir("frame_sync");
         let config = VisualMemoryConfig {
-            enabled: true,
             output_dir: dir.clone(),
             ..Default::default()
         };
@@ -484,7 +588,6 @@ mod tests {
     fn test_double_shutdown_safe() {
         let dir = temp_dir("double_shutdown");
         let config = VisualMemoryConfig {
-            enabled: true,
             output_dir: dir.clone(),
             ..Default::default()
         };
