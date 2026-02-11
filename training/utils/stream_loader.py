@@ -8,11 +8,14 @@ Usage:
     dataset = YouTubeStreamDataset(
         playlist_url="https://www.youtube.com/playlist?list=PLxxx",
         image_size=224,
+        seq_len=16,
         frame_skip=5,
     )
     loader = DataLoader(dataset, batch_size=8, num_workers=0)
     for batch in loader:
-        # batch keys: image, image_next, tokens, is_episode_start
+        # batch["frames"]: (B, T, C, H, W) — T-frame chunks for Mamba parallel scan
+        # batch["tokens"]: (B, L) — dummy tokens
+        # batch["is_episode_start"]: (B,) — True on first chunk of each video
         ...
 """
 
@@ -178,8 +181,12 @@ def _process_frame(frame_bgr: np.ndarray, image_size: int) -> torch.Tensor:
 class YouTubeStreamDataset(IterableDataset):
     """Buffered YouTube playlist dataset for Phase 1.5 temporal JEPA training.
 
-    Yields frame-pair dicts matching TemporalFrameDataset's contract:
-        {"image": (3,H,W), "image_next": (3,H,W), "tokens": (L,), "is_episode_start": bool}
+    Yields frame-chunk dicts matching TemporalFrameDataset's contract:
+        {"frames": (T, 3, H, W), "tokens": (L,), "is_episode_start": bool}
+
+    Each chunk contains T contiguous (after frame_skip) frames from a single
+    video. Mamba processes all T frames in one parallel scan pass. BPTT state
+    carries across sequential chunks.
 
     Videos are downloaded just-in-time by a background thread (VideoBuffer).
     Frames are subsampled with frame_skip to expand temporal context.
@@ -187,6 +194,7 @@ class YouTubeStreamDataset(IterableDataset):
     Args:
         playlist_url: YouTube playlist URL.
         image_size: Output frame resolution (square).
+        seq_len: Number of frames per chunk (default 16).
         frame_skip: Keep every Nth frame (default 5 → ~6 effective FPS from 30fps source).
         max_seq_len: Length of dummy token sequences.
         vocab_size: Vocab size for dummy tokens.
@@ -199,6 +207,7 @@ class YouTubeStreamDataset(IterableDataset):
         self,
         playlist_url: str,
         image_size: int = 224,
+        seq_len: int = 16,
         frame_skip: int = 5,
         max_seq_len: int = 64,
         vocab_size: int = 32000,
@@ -209,6 +218,7 @@ class YouTubeStreamDataset(IterableDataset):
         super().__init__()
         self.playlist_url = playlist_url
         self.image_size = image_size
+        self.seq_len = seq_len
         self.frame_skip = max(frame_skip, 1)
         self.max_seq_len = max_seq_len
         self.vocab_size = vocab_size
@@ -219,13 +229,13 @@ class YouTubeStreamDataset(IterableDataset):
         # Resolve playlist → list of video URLs (fast, no download)
         print(f"[YouTubeStream] Resolving playlist: {playlist_url}")
         self.video_urls = _get_playlist_video_urls(playlist_url)
-        print(f"[YouTubeStream] Found {len(self.video_urls)} videos")
+        print(f"[YouTubeStream] Found {len(self.video_urls)} videos (seq_len={seq_len})")
 
         if not self.video_urls:
             raise ValueError(f"No videos found in playlist: {playlist_url}")
 
-    def _frame_pair_generator(self):
-        """Yield (frame_t, frame_t+1) dicts from buffered video files."""
+    def _chunk_generator(self):
+        """Yield (T, C, H, W) frame-chunk dicts from buffered video files."""
         # Determine which videos this worker handles
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
@@ -258,23 +268,23 @@ class YouTubeStreamDataset(IterableDataset):
                     # Playlist exhausted
                     break
 
-                yield from self._read_video_pairs(video_path)
+                yield from self._read_video_chunks(video_path)
                 buffer.cleanup_video(video_path)
 
         finally:
             buffer.stop()
 
-    def _read_video_pairs(self, video_path: str):
-        """Read a local video file and yield frame-pair dicts with frame_skip."""
+    def _read_video_chunks(self, video_path: str):
+        """Read a local video file and yield frame-chunk dicts with frame_skip."""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"[YouTubeStream] Failed to open: {video_path}")
             return
 
         try:
-            prev_frame = None
+            frame_buffer = []
             frame_count = 0
-            is_first_pair = True
+            is_first_chunk = True
 
             while True:
                 ret, frame_bgr = cap.read()
@@ -286,18 +296,17 @@ class YouTubeStreamDataset(IterableDataset):
                 if (frame_count - 1) % self.frame_skip != 0:
                     continue
 
-                current = _process_frame(frame_bgr, self.image_size)
+                frame_buffer.append(_process_frame(frame_bgr, self.image_size))
 
-                if prev_frame is not None:
+                # Yield a chunk when buffer is full
+                if len(frame_buffer) == self.seq_len:
                     yield {
-                        "image": prev_frame,
-                        "image_next": current,
+                        "frames": torch.stack(frame_buffer),  # (T, C, H, W)
                         "tokens": torch.randint(0, self.vocab_size, (self.max_seq_len,)),
-                        "is_episode_start": is_first_pair,
+                        "is_episode_start": is_first_chunk,
                     }
-                    is_first_pair = False
-
-                prev_frame = current
+                    is_first_chunk = False
+                    frame_buffer = []
 
         except Exception as e:
             print(f"[YouTubeStream] Error reading {video_path}: {e}")
@@ -305,4 +314,4 @@ class YouTubeStreamDataset(IterableDataset):
             cap.release()
 
     def __iter__(self):
-        return self._frame_pair_generator()
+        return self._chunk_generator()

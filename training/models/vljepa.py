@@ -61,8 +61,17 @@ class Mamba3Jepa(nn.Module):
     ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Phase 1: JEPA forward pass with InfoNCE loss.
 
+        Supports both single images and video chunks:
+          - Single: images is (batch, C, H, W)
+          - Chunk:  images is (batch, T, C, H, W) — T frames per sample
+
+        For chunks, ViT encodes each frame independently, then all T frames'
+        patch tokens are concatenated into a long sequence (B, T*N, D) for
+        Mamba's parallel scan. This is the key efficiency win: Mamba processes
+        T time-steps in one pass instead of T separate forward calls.
+
         Args:
-            images: (batch, C, H, W) input images
+            images: (batch, C, H, W) or (batch, T, C, H, W) input frames
             query_tokens: (batch, n_qry, query_embed_dim) query embeddings
             target_tokens: (batch, seq_len) target text token IDs
             temperature: InfoNCE temperature
@@ -74,9 +83,19 @@ class Mamba3Jepa(nn.Module):
         """
         batch = images.shape[0]
 
-        # X-Encoder (frozen)
+        # X-Encoder (frozen) — handle both (B, C, H, W) and (B, T, C, H, W)
         with torch.no_grad():
-            visual_tokens = self.x_encoder(images)  # (B, N, vision_dim)
+            if images.dim() == 5:
+                # Video chunk: (B, T, C, H, W) → flatten to (B*T, C, H, W) for ViT
+                B, T, C, H, W = images.shape
+                flat_images = images.reshape(B * T, C, H, W)
+                flat_tokens = self.x_encoder(flat_images)  # (B*T, N, vision_dim)
+                N, D = flat_tokens.shape[1], flat_tokens.shape[2]
+                # Reshape to (B, T*N, vision_dim) — long temporal sequence for Mamba
+                visual_tokens = flat_tokens.reshape(B, T * N, D)
+            else:
+                # Single image: (B, C, H, W)
+                visual_tokens = self.x_encoder(images)  # (B, N, vision_dim)
 
         # Predictor (with state carry-over)
         pred_embed, final_state = self.predictor(

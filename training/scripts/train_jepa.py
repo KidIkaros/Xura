@@ -67,10 +67,13 @@ from utils.stream_loader import YouTubeStreamDataset
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TemporalFrameDataset(Dataset):
-    """Sequential frame dataset for temporal/stateful training.
+    """Sequential frame-chunk dataset for temporal/stateful training.
 
-    Serves (frame_t, frame_t+1) pairs from video or screen recording
-    directories. Frames must be pre-extracted as numbered images.
+    Yields contiguous chunks of T frames from video episodes. Each sample
+    is a (T, C, H, W) tensor that Mamba processes in a single parallel scan.
+    Temporal learning comes from:
+      1) Mamba scanning T frames in parallel within each chunk.
+      2) BPTT state carry-over across sequential chunks.
 
     Expected directory structure:
       data_dir/
@@ -89,43 +92,46 @@ class TemporalFrameDataset(Dataset):
         self,
         data_dir: str,
         image_size: int = 224,
+        seq_len: int = 16,
         max_seq_len: int = 64,
         vocab_size: int = 32000,
     ):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
+        self.seq_len = seq_len
         self.max_seq_len = max_seq_len
         self.vocab_size = vocab_size
 
-        # Build list of (frame_t, frame_t+1, is_episode_start) tuples
-        self.pairs: list[tuple[str, str, bool]] = []
+        # Build list of (chunk_paths, is_episode_start) where chunk_paths is a list of T frame paths
+        self.chunks: list[tuple[list[str], bool]] = []
 
         if (self.data_dir / "temporal_manifest.jsonl").exists():
             self._load_from_manifest()
         elif self.data_dir.exists():
             self._discover_episodes()
 
-        if not self.pairs:
+        if not self.chunks:
             print(f"[WARNING] No temporal data in {data_dir}. Using synthetic temporal data.")
             self.synthetic = True
             self.n_synthetic_episodes = 10
             self.episode_len = 100
         else:
             self.synthetic = False
-            print(f"[TemporalDataset] Found {len(self.pairs)} frame pairs")
+            print(f"[TemporalDataset] Found {len(self.chunks)} frame chunks (seq_len={seq_len})")
+
+    def _chunk_episode(self, frame_paths: list[str]):
+        """Split an episode's frames into disjoint chunks of seq_len."""
+        for i in range(0, len(frame_paths) - self.seq_len + 1, self.seq_len):
+            chunk = frame_paths[i : i + self.seq_len]
+            self.chunks.append((chunk, i == 0))
 
     def _load_from_manifest(self):
         """Load from temporal_manifest.jsonl."""
         with open(self.data_dir / "temporal_manifest.jsonl") as f:
             for line in f:
                 entry = json.loads(line)
-                frames = entry["frames"]
-                for i in range(len(frames) - 1):
-                    self.pairs.append((
-                        str(self.data_dir / frames[i]),
-                        str(self.data_dir / frames[i + 1]),
-                        i == 0,  # is_episode_start
-                    ))
+                frames = [str(self.data_dir / f) for f in entry["frames"]]
+                self._chunk_episode(frames)
 
     def _discover_episodes(self):
         """Auto-discover episode directories with numbered frames."""
@@ -135,19 +141,18 @@ class TemporalFrameDataset(Dataset):
         ])
         for ep_dir in episode_dirs:
             frames = sorted(ep_dir.glob("frame_*.jpg")) + sorted(ep_dir.glob("frame_*.png"))
-            for i in range(len(frames) - 1):
-                self.pairs.append((str(frames[i]), str(frames[i + 1]), i == 0))
+            self._chunk_episode([str(f) for f in frames])
 
     def __len__(self) -> int:
         if self.synthetic:
-            return self.n_synthetic_episodes * (self.episode_len - 1)
-        return len(self.pairs)
+            return self.n_synthetic_episodes * (self.episode_len // self.seq_len)
+        return len(self.chunks)
 
     def __getitem__(self, idx: int) -> dict:
         if self.synthetic:
             return self._synthetic_temporal_sample(idx)
 
-        frame_t_path, frame_t1_path, is_start = self.pairs[idx]
+        chunk_paths, is_start = self.chunks[idx]
 
         try:
             from PIL import Image
@@ -159,43 +164,37 @@ class TemporalFrameDataset(Dataset):
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225]),
             ])
-            frame_t = transform(Image.open(frame_t_path).convert("RGB"))
-            frame_t1 = transform(Image.open(frame_t1_path).convert("RGB"))
+            frames = torch.stack([
+                transform(Image.open(p).convert("RGB")) for p in chunk_paths
+            ])  # (T, C, H, W)
         except Exception:
-            frame_t = torch.randn(3, self.image_size, self.image_size)
-            frame_t1 = torch.randn(3, self.image_size, self.image_size)
+            frames = torch.randn(self.seq_len, 3, self.image_size, self.image_size)
 
-        # Dummy tokens (temporal training uses frame embeddings as targets)
         tokens = torch.randint(0, self.vocab_size, (self.max_seq_len,))
 
         return {
-            "image": frame_t,          # Current frame (input)
-            "image_next": frame_t1,    # Next frame (target for temporal prediction)
+            "frames": frames,           # (T, C, H, W) — chunk of sequential video frames
             "tokens": tokens,
             "is_episode_start": is_start,
         }
 
     def _synthetic_temporal_sample(self, idx: int) -> dict:
         """Generate synthetic temporal data with smooth transitions."""
-        ep_idx = idx // (self.episode_len - 1)
-        frame_idx = idx % (self.episode_len - 1)
+        chunks_per_ep = self.episode_len // self.seq_len
+        ep_idx = idx // chunks_per_ep
+        chunk_idx = idx % chunks_per_ep
 
-        # Create smoothly varying synthetic frames (not pure noise)
-        torch.manual_seed(ep_idx * 10000 + frame_idx)
-        base = torch.randn(3, self.image_size, self.image_size)
-        torch.manual_seed(ep_idx * 10000 + frame_idx + 1)
-        next_base = torch.randn(3, self.image_size, self.image_size)
-
-        # Blend for smooth transitions
-        alpha = 0.8
-        frame_t = alpha * base + (1 - alpha) * next_base
-        frame_t1 = alpha * next_base + (1 - alpha) * base
+        # Create smoothly varying synthetic frames
+        frames = []
+        for t in range(self.seq_len):
+            global_frame = chunk_idx * self.seq_len + t
+            torch.manual_seed(ep_idx * 10000 + global_frame)
+            frames.append(torch.randn(3, self.image_size, self.image_size))
 
         return {
-            "image": frame_t,
-            "image_next": frame_t1,
+            "frames": torch.stack(frames),  # (T, C, H, W)
             "tokens": torch.randint(0, self.vocab_size, (self.max_seq_len,)),
-            "is_episode_start": frame_idx == 0,
+            "is_episode_start": chunk_idx == 0,
         }
 
 
@@ -253,7 +252,7 @@ def train_one_epoch(
     persistent_state: list[torch.Tensor] | None = None
 
     for batch_idx, batch in enumerate(dataloader):
-        images = batch["image"].to(device)
+        images = batch["frames"].to(device)
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
@@ -371,7 +370,7 @@ def validate(
     persistent_state = None
 
     for batch in dataloader:
-        images = batch["image"].to(device)
+        images = batch["frames"].to(device)
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
@@ -456,7 +455,7 @@ def train_streaming(
             iterator = iter(dataloader)
             batch = next(iterator)
 
-        images = batch["image"].to(device)
+        images = batch["frames"].to(device)
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
@@ -629,6 +628,8 @@ def main():
                         help="YouTube playlist URL (activates buffered streaming mode)")
     parser.add_argument("--total-steps", type=int, default=50000,
                         help="Total training steps for streaming mode")
+    parser.add_argument("--seq-len", type=int, default=16,
+                        help="Frames per chunk for Mamba parallel scan (default 16)")
     parser.add_argument("--frame-skip", type=int, default=5,
                         help="Keep every Nth frame from video (default 5 → ~6 eff. FPS)")
     parser.add_argument("--save-every-steps", type=int, default=5000,
@@ -704,6 +705,7 @@ def main():
         dataset = YouTubeStreamDataset(
             playlist_url=args.playlist_url,
             image_size=image_size,
+            seq_len=args.seq_len,
             frame_skip=args.frame_skip,
             max_seq_len=args.max_seq_len,
             vocab_size=vocab_size,
@@ -722,6 +724,7 @@ def main():
         dataset = TemporalFrameDataset(
             args.data_dir,
             image_size=image_size,
+            seq_len=args.seq_len,
             max_seq_len=args.max_seq_len,
             vocab_size=vocab_size,
         )
