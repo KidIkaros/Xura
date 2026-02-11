@@ -43,10 +43,11 @@ class Mamba3Config:
     vocab_size: int = 32000  # Only used by LM head, not predictor
 
 
-# Numerical stability constants for SSM discretization
+# Numerical stability constants for SSM discretization.
+# All clamp bounds are symmetric where applicable to prevent asymmetric overflow.
 _A_LOG_CLAMP_MAX = 5.0       # Prevents exp(A_log) from exploding
 _A_DT_CLAMP_MIN = -20.0      # Floor for exp(A * dt) in ZOH discretization
-_EULER_CLAMP_ABS = 20.0       # Symmetric clamp for A * h in Euler step
+_STATE_CLAMP_ABS = 20.0      # Symmetric clamp for intermediate state products (A*h, B*x)
 
 
 class RMSNorm(nn.Module):
@@ -201,8 +202,9 @@ class Mamba3Layer(nn.Module):
             # Input contribution: use mean of x across headdim as scalar modulator
             x_scalar = x_t.mean(dim=-1, keepdim=True)  # (B, nheads, 1)
             alpha = self.trapezoidal_alpha
-            h_new_zoh = A_disc * h + dt_t * B_t * x_scalar
-            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_EULER_CLAMP_ABS, _EULER_CLAMP_ABS) + B_t * x_scalar)
+            input_drive = (B_t * x_scalar).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
+            h_new_zoh = A_disc * h + dt_t * input_drive
+            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + input_drive)
             h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
 
             # Output: y = C * h + D * x
