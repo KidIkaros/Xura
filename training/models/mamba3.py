@@ -205,13 +205,10 @@ class Mamba3Layer(nn.Module):
             # Input contribution: use mean of x across headdim as scalar modulator
             x_scalar = x_t.mean(dim=-1, keepdim=True)  # (B, nheads, 1)
             alpha = self.trapezoidal_alpha
-            input_drive = (B_t * x_scalar).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
-            h_new_zoh = (A_disc * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + dt_t * input_drive
-            h_new_euler = h + dt_t * ((A.unsqueeze(0).unsqueeze(-1) * h).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS) + input_drive)
-            h = alpha * h_new_euler + (1 - alpha) * h_new_zoh
-
-            # Clamp blended state for next-iteration safety and output stability
-            h = h.clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
+            input_drive = B_t * x_scalar
+            h_new_zoh = (A_disc * h + dt_t * input_drive).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
+            h_new_euler = (h + dt_t * (A.unsqueeze(0).unsqueeze(-1) * h + input_drive)).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
+            h = (alpha * h_new_euler + (1 - alpha) * h_new_zoh).clamp(-_STATE_CLAMP_ABS, _STATE_CLAMP_ABS)
             y_t = torch.einsum("bhn,bhn->bh", C_t, h)  # (B, nheads)
             y_t = y_t + self.D.unsqueeze(0) * x_t.mean(dim=-1)  # D skip connection
             outputs.append(y_t)
