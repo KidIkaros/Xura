@@ -16,5 +16,9 @@ pillow>=10.0.0
 # Install separately: pip install mamba-ssm>=2.0.0
 # Fallback: pure-PyTorch SSM implementation included in models/mamba3.py
 
+# YouTube streaming (Phase 1.5)
+yt-dlp>=2024.1.0
+opencv-python>=4.8.0
+
 # Optional: for distributed training
 # deepspeed>=0.12.0

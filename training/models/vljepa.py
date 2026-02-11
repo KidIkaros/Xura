@@ -57,26 +57,50 @@ class Mamba3Jepa(nn.Module):
         query_tokens: torch.Tensor,
         target_tokens: torch.Tensor,
         temperature: float = 0.07,
-    ) -> dict[str, torch.Tensor]:
+        previous_state: list[torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Phase 1: JEPA forward pass with InfoNCE loss.
 
+        Supports both single images and video chunks:
+          - Single: images is (batch, C, H, W)
+          - Chunk:  images is (batch, T, C, H, W) — T frames per sample
+
+        For chunks, ViT encodes each frame independently, then all T frames'
+        patch tokens are concatenated into a long sequence (B, T*N, D) for
+        Mamba's parallel scan. This is the key efficiency win: Mamba processes
+        T time-steps in one pass instead of T separate forward calls.
+
         Args:
-            images: (batch, C, H, W) input images
+            images: (batch, C, H, W) or (batch, T, C, H, W) input frames
             query_tokens: (batch, n_qry, query_embed_dim) query embeddings
             target_tokens: (batch, seq_len) target text token IDs
             temperature: InfoNCE temperature
+            previous_state: Optional per-layer SSM states from the previous
+                            batch for BPTT state carry-over.
 
         Returns:
-            Dict with 'loss', 'pred_embed', 'target_embed', 'accuracy'
+            Dict with 'loss', 'pred_embed', 'target_embed', 'accuracy', 'final_state'
         """
         batch = images.shape[0]
 
-        # X-Encoder (frozen)
+        # X-Encoder (frozen) — handle both (B, C, H, W) and (B, T, C, H, W)
         with torch.no_grad():
-            visual_tokens = self.x_encoder(images)  # (B, N, vision_dim)
+            if images.dim() == 5:
+                # Video chunk: (B, T, C, H, W) → flatten to (B*T, C, H, W) for ViT
+                B, T, C, H, W = images.shape
+                flat_images = images.reshape(B * T, C, H, W)
+                flat_tokens = self.x_encoder(flat_images)  # (B*T, N, vision_dim)
+                N, D = flat_tokens.shape[1], flat_tokens.shape[2]
+                # Reshape to (B, T*N, vision_dim) — long temporal sequence for Mamba
+                visual_tokens = flat_tokens.reshape(B, T * N, D)
+            else:
+                # Single image: (B, C, H, W)
+                visual_tokens = self.x_encoder(images)  # (B, N, vision_dim)
 
-        # Predictor
-        pred_embed = self.predictor(visual_tokens, query_tokens)  # (B, embed_dim)
+        # Predictor (with state carry-over)
+        pred_embed, final_state = self.predictor(
+            visual_tokens, query_tokens, initial_states=previous_state,
+        )  # (B, embed_dim), list[(B, nheads, d_state)]
 
         # Y-Encoder (target)
         target_embed = self.y_encoder(target_tokens)  # (B, embed_dim)
@@ -97,6 +121,7 @@ class Mamba3Jepa(nn.Module):
             "pred_embed": pred_embed,
             "target_embed": target_embed,
             "accuracy": accuracy,
+            "final_state": final_state,
         }
 
     def forward_jepa_text_only(
@@ -104,20 +129,24 @@ class Mamba3Jepa(nn.Module):
         query_tokens: torch.Tensor,
         target_tokens: torch.Tensor,
         temperature: float = 0.07,
-    ) -> dict[str, torch.Tensor]:
+        previous_state: list[torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Phase 1 text-only variant: skip ViT, use query-only predictor path.
 
         Args:
             query_tokens: (batch, n_qry, query_embed_dim)
             target_tokens: (batch, seq_len)
             temperature: InfoNCE temperature
+            previous_state: Optional per-layer SSM states for BPTT.
 
         Returns:
-            Dict with 'loss', 'pred_embed', 'target_embed', 'accuracy'
+            Dict with 'loss', 'pred_embed', 'target_embed', 'accuracy', 'final_state'
         """
         batch = query_tokens.shape[0]
 
-        pred_embed = self.predictor.forward_text_only(query_tokens)
+        pred_embed, final_state = self.predictor.forward_text_only(
+            query_tokens, initial_states=previous_state,
+        )
         target_embed = self.y_encoder(target_tokens)
 
         logits = torch.mm(pred_embed, target_embed.t()) / temperature
@@ -133,6 +162,7 @@ class Mamba3Jepa(nn.Module):
             "pred_embed": pred_embed,
             "target_embed": target_embed,
             "accuracy": accuracy,
+            "final_state": final_state,
         }
 
     def forward_decoder(
@@ -156,7 +186,7 @@ class Mamba3Jepa(nn.Module):
         # Get predicted embedding (frozen)
         with torch.no_grad():
             visual_tokens = self.x_encoder(images)
-            pred_embed = self.predictor(visual_tokens, query_tokens)
+            pred_embed, _ = self.predictor(visual_tokens, query_tokens)
 
         # Decoder: predicted embedding → logits
         # Shift tokens for teacher forcing: input = tokens[:-1], target = tokens[1:]
@@ -187,6 +217,33 @@ class Mamba3Jepa(nn.Module):
             y_encoder=Mamba3TextEncoder.small(),
             y_decoder=Mamba3Decoder.small(),
             shared_embed_dim=1536,
+        )
+
+    @classmethod
+    def kaggle(cls) -> "Mamba3Jepa":
+        """Build Kaggle preset — fits T4 16GB with fp16.
+
+        Uses ViT-B/16 (768-dim) as frozen X-Encoder.
+        Predictor: 512-dim, 6 layers (~25M params).
+        Y-Encoder: 384-dim, 6 layers (~15M params).
+        Y-Decoder: 256-dim, 4 layers (~10M params, trained in Phase 2).
+        Total trainable: ~40M params.
+        """
+        x_encoder = VisionEncoder(VitConfig.kaggle())
+        x_encoder.eval()
+        for p in x_encoder.parameters():
+            p.requires_grad = False
+
+        return cls(
+            x_encoder=x_encoder,
+            predictor=Mamba3Predictor(
+                d_model=512, n_layers=6, d_state=64,
+                expand=2, headdim=32, embed_dim=768,
+                vision_dim=768, query_embed_dim=768,
+            ),
+            y_encoder=Mamba3TextEncoder.kaggle(),
+            y_decoder=Mamba3Decoder.kaggle(),
+            shared_embed_dim=768,
         )
 
     @classmethod

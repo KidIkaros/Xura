@@ -95,8 +95,8 @@ class Mamba3Decoder(nn.Module):
         # Concatenate: [prefix; token_embeddings]
         hidden = torch.cat([prefix, tok_embed], dim=1)              # (B, prefix_len+seq_len, d_model)
 
-        # Backbone
-        hidden = self.backbone(hidden)
+        # Backbone (discard SSM states — decoder doesn't need BPTT)
+        hidden, _ = self.backbone(hidden)
 
         # LM head on token positions only (skip prefix)
         token_hidden = hidden[:, self.prefix_len:]                  # (B, seq_len, d_model)
@@ -140,7 +140,7 @@ class Mamba3Decoder(nn.Module):
         for _ in range(max_tokens):
             tok_embed = self.token_embedding(current_tokens)
             hidden = torch.cat([prefix, tok_embed], dim=1)
-            hidden = self.backbone(hidden)
+            hidden, _ = self.backbone(hidden)
 
             # Get logits for last position
             last_logits = self.lm_head(hidden[:, -1])  # (B, vocab_size)
@@ -175,6 +175,15 @@ class Mamba3Decoder(nn.Module):
             d_model=512, n_layers=6, d_state=64,
             expand=2, headdim=32, vocab_size=32000,
             prefix_len=8, embed_dim=1536,
+        )
+
+    @classmethod
+    def kaggle(cls) -> "Mamba3Decoder":
+        """Kaggle preset — fits T4 16GB."""
+        return cls(
+            d_model=256, n_layers=4, d_state=32,
+            expand=2, headdim=16, vocab_size=32000,
+            prefix_len=8, embed_dim=768,
         )
 
     @classmethod

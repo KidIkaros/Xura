@@ -79,15 +79,19 @@ class Mamba3Predictor(nn.Module):
         self,
         visual_tokens: torch.Tensor,
         query_embeds: torch.Tensor,
-    ) -> torch.Tensor:
+        initial_states: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Forward pass.
 
         Args:
             visual_tokens: (batch, n_vis, vision_dim) from X-Encoder
             query_embeds: (batch, n_qry, query_embed_dim) embedded query tokens
+            initial_states: Optional per-layer SSM states for BPTT carry-over.
 
         Returns:
-            (batch, embed_dim) — L2-normalized predicted embedding
+            (pred_embed, final_states) where:
+              pred_embed: (batch, embed_dim) — L2-normalized predicted embedding
+              final_states: list of per-layer (batch, nheads, d_state)
         """
         # Project inputs to d_model
         vis = self.vision_proj(visual_tokens)   # (B, n_vis, d_model)
@@ -98,32 +102,37 @@ class Mamba3Predictor(nn.Module):
 
         # Backbone with optional ANGN gating
         gate_fn = self.angn.get_gate_fn() if self.angn is not None else None
-        hidden = self.backbone(hidden, gate_fn=gate_fn)
+        hidden, final_states = self.backbone(hidden, gate_fn=gate_fn, initial_states=initial_states)
 
         # Mean pool over sequence
         pooled = hidden.mean(dim=1)             # (B, d_model)
 
         # Prediction head → L2 normalize
         projected = self.pred_head(pooled)      # (B, embed_dim)
-        return F.normalize(projected, p=2, dim=-1)
+        return F.normalize(projected, p=2, dim=-1), final_states
 
-    def forward_text_only(self, query_embeds: torch.Tensor) -> torch.Tensor:
+    def forward_text_only(
+        self,
+        query_embeds: torch.Tensor,
+        initial_states: list[torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Text-only forward (skips vision projection).
 
         Args:
             query_embeds: (batch, n_qry, query_embed_dim)
+            initial_states: Optional per-layer SSM states for BPTT carry-over.
 
         Returns:
-            (batch, embed_dim) — L2-normalized predicted embedding
+            (pred_embed, final_states)
         """
         qry = self.query_proj(query_embeds)
 
         gate_fn = self.angn.get_gate_fn() if self.angn is not None else None
-        hidden = self.backbone(qry, gate_fn=gate_fn)
+        hidden, final_states = self.backbone(qry, gate_fn=gate_fn, initial_states=initial_states)
 
         pooled = hidden.mean(dim=1)
         projected = self.pred_head(pooled)
-        return F.normalize(projected, p=2, dim=-1)
+        return F.normalize(projected, p=2, dim=-1), final_states
 
     @classmethod
     def from_config(cls, config: dict) -> "Mamba3Predictor":
