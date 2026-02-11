@@ -19,6 +19,7 @@ Usage:
         ...
 """
 
+import atexit
 import os
 import queue
 import shutil
@@ -82,6 +83,9 @@ class VideoBuffer:
             self._tmp_dir = tempfile.mkdtemp(prefix="xura_buf_")
             self._owns_tmp = True
 
+        # Register atexit cleanup (more reliable than __del__)
+        atexit.register(self.stop)
+
         # Start producer thread
         self._thread = threading.Thread(target=self._download_loop, daemon=True)
         self._thread.start()
@@ -107,6 +111,12 @@ class VideoBuffer:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])
+                # Validate: file must exist and be non-trivially sized (>10KB)
+                if not os.path.isfile(out_path) or os.path.getsize(out_path) < 10_000:
+                    print(f"[VideoBuffer] Invalid/corrupt download for video {idx}, skipping")
+                    if os.path.isfile(out_path):
+                        os.remove(out_path)
+                    continue
                 # Enqueue the path (blocks if queue is full — backpressure)
                 self._queue.put(out_path)
             except Exception as e:
@@ -139,6 +149,7 @@ class VideoBuffer:
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def __del__(self):
+        # Fallback; atexit handler is the primary cleanup path
         self.stop()
 
 
