@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{DType, Device, KoreError, Result};
+use crate::{DType, Device, Result, XuraError};
 
 /// Backing storage for tensor data (CPU only, no CUDA).
 #[derive(Debug, Clone)]
@@ -23,9 +23,12 @@ impl Storage {
     pub fn from_bytes(dtype: DType, numel: usize, bytes: Vec<u8>) -> Result<Self> {
         let expected = dtype.storage_bytes(numel);
         if bytes.len() != expected {
-            return Err(KoreError::StorageError(format!(
+            return Err(XuraError::StorageError(format!(
                 "Expected {} bytes for {} elements of {}, got {}",
-                expected, numel, dtype, bytes.len()
+                expected,
+                numel,
+                dtype,
+                bytes.len()
             )));
         }
         Ok(Self {

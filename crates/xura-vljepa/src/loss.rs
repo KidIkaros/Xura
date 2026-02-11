@@ -121,7 +121,11 @@ mod tests {
         let loss = info_nce_loss(&pred, &tgt, batch, dim, 0.07);
         // Diagonal has sim=1/0.07≈14.3, off-diagonal has sim=0.
         // softmax(14.3, 0, 0, 0) ≈ 1.0, so loss ≈ 0
-        assert!(loss < 0.01, "matched orthogonal pairs should give near-zero loss, got {}", loss);
+        assert!(
+            loss < 0.01,
+            "matched orthogonal pairs should give near-zero loss, got {}",
+            loss
+        );
     }
 
     #[test]

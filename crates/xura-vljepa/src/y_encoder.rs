@@ -22,7 +22,9 @@ impl Linear {
         let mut rng = rand::thread_rng();
         let std = (2.0 / (in_dim + out_dim) as f32).sqrt();
         Self {
-            weight: (0..out_dim * in_dim).map(|_| rng.gen_range(-std..std)).collect(),
+            weight: (0..out_dim * in_dim)
+                .map(|_| rng.gen_range(-std..std))
+                .collect(),
             bias: vec![0.0f32; out_dim],
             in_dim,
             out_dim,
@@ -61,7 +63,11 @@ impl Mamba3TextEncoder {
         let backbone = MixerModel::new(mamba_config);
         let proj_head = Linear::new(config.d_model, config.embed_dim);
 
-        Self { config, backbone, proj_head }
+        Self {
+            config,
+            backbone,
+            proj_head,
+        }
     }
 
     /// Forward pass.
@@ -73,12 +79,7 @@ impl Mamba3TextEncoder {
     ///
     /// # Returns
     /// Target embedding: shape (batch, embed_dim), L2-normalized.
-    pub fn forward(
-        &self,
-        token_ids: &[usize],
-        batch: usize,
-        seq_len: usize,
-    ) -> Vec<f32> {
+    pub fn forward(&self, token_ids: &[usize], batch: usize, seq_len: usize) -> Vec<f32> {
         let dm = self.config.d_model;
 
         // 1) Run through Mamba-3 backbone: (batch, seq_len, d_model)
@@ -133,7 +134,9 @@ mod tests {
 
         let batch = 2;
         let seq_len = 8;
-        let tokens: Vec<usize> = (0..batch * seq_len).map(|i| i % config.vocab_size).collect();
+        let tokens: Vec<usize> = (0..batch * seq_len)
+            .map(|i| i % config.vocab_size)
+            .collect();
 
         let output = encoder.forward(&tokens, batch, seq_len);
         assert_eq!(output.len(), batch * config.embed_dim);
@@ -153,7 +156,8 @@ mod tests {
         let norm: f32 = output.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!(
             (norm - 1.0).abs() < 1e-4,
-            "output should be L2-normalized, got norm={}", norm
+            "output should be L2-normalized, got norm={}",
+            norm
         );
     }
 }

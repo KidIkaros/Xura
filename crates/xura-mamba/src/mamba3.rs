@@ -12,8 +12,8 @@
 
 use rand::Rng;
 
-use xura_core::Tensor;
 use xura_core::Module;
+use xura_core::Tensor;
 
 use crate::norm::RMSNormGated;
 use crate::ssd3;
@@ -78,16 +78,10 @@ pub struct Mamba3 {
 
 impl Mamba3 {
     /// Create a new Mamba-3 block with default options.
-    pub fn new(
-        d_model: usize,
-        d_state: usize,
-        expand: usize,
-        headdim: usize,
-    ) -> Self {
+    pub fn new(d_model: usize, d_state: usize, expand: usize, headdim: usize) -> Self {
         Self::new_full(
-            d_model, d_state, expand, headdim,
-            None, 1, true, true, false, false, false,
-            true, 0.5, None,
+            d_model, d_state, expand, headdim, None, 1, true, true, false, false, false, true, 0.5,
+            None,
         )
     }
 
@@ -111,7 +105,10 @@ impl Mamba3 {
     ) -> Self {
         let d_inner = expand * d_model;
         let d_ssm = d_ssm.unwrap_or(d_inner);
-        assert!(d_ssm % headdim == 0, "d_ssm must be divisible by headdim");
+        assert!(
+            d_ssm.is_multiple_of(headdim),
+            "d_ssm must be divisible by headdim"
+        );
         let nheads = d_ssm / headdim;
 
         let mut rng = rand::thread_rng();
@@ -173,7 +170,12 @@ impl Mamba3 {
 
         // RMSNormGated
         let norm = if rmsnorm {
-            Some(RMSNormGated::new(d_ssm, 1e-5, norm_before_gate, d_ssm / ngroups))
+            Some(RMSNormGated::new(
+                d_ssm,
+                1e-5,
+                norm_before_gate,
+                d_ssm / ngroups,
+            ))
         } else {
             None
         };
@@ -269,7 +271,8 @@ impl Mamba3 {
                     let p = i % self.headdim;
                     x_scan[b * seq_len * self.nheads * self.headdim
                         + l * self.nheads * self.headdim
-                        + h * self.headdim + p] = proj[src + i];
+                        + h * self.headdim
+                        + p] = proj[src + i];
                 }
             }
         }
@@ -324,7 +327,8 @@ impl Mamba3 {
                         let p = i % self.headdim;
                         z_scan[b * seq_len * self.nheads * self.headdim
                             + l * self.nheads * self.headdim
-                            + h * self.headdim + p] = proj[src + i];
+                            + h * self.headdim
+                            + p] = proj[src + i];
                     }
                 }
             }
@@ -335,10 +339,20 @@ impl Mamba3 {
 
         // 9) Run Mamba-3 SSD scan
         let scan_result = ssd3::mamba3_scan_combined(
-            &x_scan, batch, seq_len, self.nheads, self.headdim,
-            &dt_scan, &a_real, &self.a_imag,
-            &b_scan, self.ngroups, self.d_state, &c_scan,
-            Some(&self.b_bias), Some(&self.c_bias),
+            &x_scan,
+            batch,
+            seq_len,
+            self.nheads,
+            self.headdim,
+            &dt_scan,
+            &a_real,
+            &self.a_imag,
+            &b_scan,
+            self.ngroups,
+            self.d_state,
+            &c_scan,
+            Some(&self.b_bias),
+            Some(&self.c_bias),
             Some(&self.d_skip),
             z_for_scan.as_deref(),
             Some(&self.dt_bias),
@@ -357,7 +371,8 @@ impl Mamba3 {
                     y_flat[b * seq_len * self.d_ssm + l * self.d_ssm + i] =
                         scan_result.output[b * seq_len * self.nheads * self.headdim
                             + l * self.nheads * self.headdim
-                            + h * self.headdim + p];
+                            + h * self.headdim
+                            + p];
                 }
             }
         }
@@ -516,15 +531,25 @@ impl Mamba3 {
 
         // 6) Run Mamba-3 SSM step
         let y = ssd3::mamba3_ssm_step(
-            &x_step, batch, self.nheads, self.headdim,
-            &dt_step, &a_real, &self.a_imag,
-            &b_step, self.ngroups, self.d_state, &c_step,
-            Some(&self.b_bias), Some(&self.c_bias),
+            &x_step,
+            batch,
+            self.nheads,
+            self.headdim,
+            &dt_step,
+            &a_real,
+            &self.a_imag,
+            &b_step,
+            self.ngroups,
+            self.d_state,
+            &c_step,
+            Some(&self.b_bias),
+            Some(&self.c_bias),
             Some(&self.d_skip),
             z_for_step.as_deref(),
             Some(&self.dt_bias),
             true,
-            actual_state, prev_bx,
+            actual_state,
+            prev_bx,
             self.trapezoidal_alpha,
             self.use_rope,
         );
@@ -611,14 +636,26 @@ impl Mamba3 {
         let d_in_proj = di + self.d_ssm + 2 * ngs + self.nheads;
 
         let in_proj = d_in_proj * self.d_model
-            + if self.in_proj_bias.is_some() { d_in_proj } else { 0 };
+            + if self.in_proj_bias.is_some() {
+                d_in_proj
+            } else {
+                0
+            };
         let b_c_bias = 2 * ngs;
         let dt_bias = self.nheads;
         let a_params = 2 * self.nheads; // a_log_real + a_imag
         let d_skip = self.nheads;
-        let norm_params = if self.norm.is_some() { 2 * self.d_ssm } else { 0 };
+        let norm_params = if self.norm.is_some() {
+            2 * self.d_ssm
+        } else {
+            0
+        };
         let out_proj = self.d_model * di
-            + if self.out_proj_bias.is_some() { self.d_model } else { 0 };
+            + if self.out_proj_bias.is_some() {
+                self.d_model
+            } else {
+                0
+            };
 
         in_proj + b_c_bias + dt_bias + a_params + d_skip + norm_params + out_proj
     }
@@ -628,7 +665,7 @@ impl Module for Mamba3 {
     fn forward(&self, input: &Tensor) -> xura_core::Result<Tensor> {
         let dims = input.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![0, 0, 0],
                 got: dims,
             });
@@ -637,16 +674,16 @@ impl Module for Mamba3 {
         let seq_len = dims[1];
         let d = dims[2];
         if d != self.d_model {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![batch, seq_len, self.d_model],
                 got: dims,
             });
         }
 
         let data = input.contiguous();
-        let x = data.as_f32_slice().ok_or_else(|| {
-            xura_core::KoreError::UnsupportedDType(input.dtype())
-        })?;
+        let x = data
+            .as_f32_slice()
+            .ok_or_else(|| xura_core::XuraError::UnsupportedDType(input.dtype()))?;
 
         let output = self.forward_train(x, batch, seq_len);
         Ok(Tensor::from_f32(&output, &[batch, seq_len, self.d_model]))
@@ -713,8 +750,7 @@ mod tests {
     #[test]
     fn test_mamba3_no_rope() {
         let m = Mamba3::new_full(
-            64, 16, 2, 16,
-            None, 1, false, true, false, false, false, true, 0.5, None,
+            64, 16, 2, 16, None, 1, false, true, false, false, false, true, 0.5, None,
         );
         assert!(!m.use_rope);
         assert!(m.a_imag.iter().all(|&v| v == 0.0));

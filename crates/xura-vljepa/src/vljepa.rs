@@ -6,10 +6,10 @@
 use crate::config::Mamba3JepaConfig;
 use crate::loss::info_nce_loss;
 use crate::predictor::Mamba3Predictor;
+use crate::recursion::MemoryTool;
 use crate::vit::VisionEncoder;
 use crate::y_decoder::Mamba3Decoder;
 use crate::y_encoder::Mamba3TextEncoder;
-use crate::recursion::MemoryTool;
 
 /// Training output from a forward pass.
 pub struct TrainOutput {
@@ -58,7 +58,13 @@ impl Mamba3Jepa {
         let y_encoder = Mamba3TextEncoder::new(config.y_encoder.clone());
         let y_decoder = Mamba3Decoder::new(config.y_decoder.clone());
 
-        Self { config, x_encoder, predictor, y_encoder, y_decoder }
+        Self {
+            config,
+            x_encoder,
+            predictor,
+            y_encoder,
+            y_decoder,
+        }
     }
 
     /// Replace the memory tool used by the recursion layer.
@@ -110,13 +116,9 @@ impl Mamba3Jepa {
         );
 
         // 3) Predictor: (visual_tokens, query_embeds) → predicted embedding
-        let predicted = self.predictor.forward(
-            &visual_tokens,
-            &query_embeds,
-            batch,
-            num_patches,
-            n_qry,
-        );
+        let predicted =
+            self.predictor
+                .forward(&visual_tokens, &query_embeds, batch, num_patches, n_qry);
 
         // 4) Y-Encoder: target_tokens → target embedding
         let target = self.y_encoder.forward(target_tokens, batch, n_tgt);
@@ -125,7 +127,11 @@ impl Mamba3Jepa {
         let embed_dim = self.config.shared_embed_dim;
         let loss = info_nce_loss(&predicted, &target, batch, embed_dim, temperature);
 
-        TrainOutput { loss, predicted, target }
+        TrainOutput {
+            loss,
+            predicted,
+            target,
+        }
     }
 
     /// Inference forward pass (single sample).
@@ -160,17 +166,16 @@ impl Mamba3Jepa {
         );
 
         // 3) Predictor → predicted embedding
-        let predicted = self.predictor.forward(
-            &visual_tokens,
-            &query_embeds,
-            batch,
-            num_patches,
-            n_qry,
-        );
+        let predicted =
+            self.predictor
+                .forward(&visual_tokens, &query_embeds, batch, num_patches, n_qry);
 
         match mode {
             InferenceMode::Embedding => InferenceOutput::Embedding(predicted),
-            InferenceMode::Decode { max_tokens, bos_token } => {
+            InferenceMode::Decode {
+                max_tokens,
+                bos_token,
+            } => {
                 let tokens = self.y_decoder.generate(&predicted, max_tokens, bos_token);
                 InferenceOutput::Tokens(tokens)
             }
@@ -204,15 +209,16 @@ impl Mamba3Jepa {
         );
 
         // Predictor text-only path (no visual tokens)
-        let predicted = self.predictor.forward_text_only(
-            &query_embeds,
-            batch,
-            n_qry,
-        );
+        let predicted = self
+            .predictor
+            .forward_text_only(&query_embeds, batch, n_qry);
 
         match mode {
             InferenceMode::Embedding => InferenceOutput::Embedding(predicted),
-            InferenceMode::Decode { max_tokens, bos_token } => {
+            InferenceMode::Decode {
+                max_tokens,
+                bos_token,
+            } => {
                 let tokens = self.y_decoder.generate(&predicted, max_tokens, bos_token);
                 InferenceOutput::Tokens(tokens)
             }
@@ -228,12 +234,7 @@ impl Mamba3Jepa {
     ///
     /// # Returns
     /// Index of the most similar candidate.
-    pub fn classify(
-        &self,
-        predicted: &[f32],
-        candidates: &[f32],
-        n_candidates: usize,
-    ) -> usize {
+    pub fn classify(&self, predicted: &[f32], candidates: &[f32], n_candidates: usize) -> usize {
         let dim = self.config.shared_embed_dim;
         let mut best_idx = 0;
         let mut best_sim = f32::NEG_INFINITY;
@@ -263,8 +264,12 @@ fn embed_tokens(
     d_model: usize,
     n: usize,
 ) -> Vec<f32> {
-    assert!(n <= token_ids.len(),
-        "embed_tokens: n ({}) exceeds token_ids length ({})", n, token_ids.len());
+    assert!(
+        n <= token_ids.len(),
+        "embed_tokens: n ({}) exceeds token_ids length ({})",
+        n,
+        token_ids.len()
+    );
     let vocab_size = embedding_table.len() / d_model;
     let mut out = vec![0.0f32; n * d_model];
     for i in 0..n {
@@ -274,7 +279,11 @@ fn embed_tokens(
             let dst = i * d_model;
             out[dst..dst + d_model].copy_from_slice(&embedding_table[src..src + d_model]);
         } else {
-            debug_assert!(false, "embed_tokens: OOV token id {} >= vocab_size {}", tid, vocab_size);
+            debug_assert!(
+                false,
+                "embed_tokens: OOV token id {} >= vocab_size {}",
+                tid, vocab_size
+            );
             // Out-of-vocab IDs get zero vectors in release builds
         }
     }
@@ -305,17 +314,32 @@ mod tests {
         let n_tgt = 4;
 
         let images = vec![0.1f32; batch * config.vit.in_channels * h * w];
-        let query_tokens: Vec<usize> = (0..batch * n_qry).map(|i| i % config.y_encoder.vocab_size).collect();
-        let target_tokens: Vec<usize> = (0..batch * n_tgt).map(|i| i % config.y_encoder.vocab_size).collect();
+        let query_tokens: Vec<usize> = (0..batch * n_qry)
+            .map(|i| i % config.y_encoder.vocab_size)
+            .collect();
+        let target_tokens: Vec<usize> = (0..batch * n_tgt)
+            .map(|i| i % config.y_encoder.vocab_size)
+            .collect();
 
         let output = model.train_forward(
-            &images, &query_tokens, &target_tokens,
-            batch, h, w, n_qry, n_tgt, 0.07,
+            &images,
+            &query_tokens,
+            &target_tokens,
+            batch,
+            h,
+            w,
+            n_qry,
+            n_tgt,
+            0.07,
         );
 
         assert_eq!(output.predicted.len(), batch * config.shared_embed_dim);
         assert_eq!(output.target.len(), batch * config.shared_embed_dim);
-        assert!(output.loss.is_finite(), "loss should be finite, got {}", output.loss);
+        assert!(
+            output.loss.is_finite(),
+            "loss should be finite, got {}",
+            output.loss
+        );
     }
 
     #[test]
@@ -348,8 +372,14 @@ mod tests {
         let query = vec![1usize, 2];
 
         let output = model.infer(
-            &image, &query, h, w,
-            InferenceMode::Decode { max_tokens: 5, bos_token: 0 },
+            &image,
+            &query,
+            h,
+            w,
+            InferenceMode::Decode {
+                max_tokens: 5,
+                bos_token: 0,
+            },
         );
         match output {
             InferenceOutput::Tokens(tokens) => {

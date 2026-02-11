@@ -3,8 +3,8 @@
 //! Constructs the (A, P, B, V) parameterization used by S4 and S4D models.
 //! Supports multiple initialization schemes: HiPPO, diagonal-inverse, diagonal-linear, etc.
 
-use std::f32::consts::PI;
 use rand::Rng;
+use std::f32::consts::PI;
 
 use crate::complex_utils::C32;
 use crate::hippo;
@@ -48,8 +48,8 @@ pub fn dplr(
     match init {
         "hippo" | "legs" => {
             // Use HiPPO eigenvalues
-            let (w, p_nplr, b_nplr, _v) = hippo::nplr("legs", n, rank, Some(2.0))
-                .expect("HiPPO NPLR initialization failed");
+            let (w, p_nplr, b_nplr, _v) =
+                hippo::nplr("legs", n, rank, Some(2.0)).expect("HiPPO NPLR initialization failed");
             // Broadcast to H copies
             for hi in 0..h {
                 for ni in 0..half_n {
@@ -173,10 +173,7 @@ fn build_non_hippo(
         }
         "random" => {
             for v in b.iter_mut() {
-                *v = C32::new(
-                    rng.gen::<f32>() * b_scale,
-                    rng.gen::<f32>() * b_scale,
-                );
+                *v = C32::new(rng.gen::<f32>() * b_scale, rng.gen::<f32>() * b_scale);
             }
         }
         _ => {
@@ -189,10 +186,7 @@ fn build_non_hippo(
     // Initialize P (random complex)
     let mut p = vec![C32::new(0.0, 0.0); rank * h * half_n];
     for v in p.iter_mut() {
-        *v = C32::new(
-            rng.gen::<f32>() * p_scale,
-            rng.gen::<f32>() * p_scale,
-        );
+        *v = C32::new(rng.gen::<f32>() * p_scale, rng.gen::<f32>() * p_scale);
     }
 
     // V = identity
@@ -212,29 +206,23 @@ fn build_non_hippo(
 /// - A: shape (H, N/2) complex
 /// - P: shape (rank, H, N/2) complex
 /// - B: shape (H, N/2) complex
-pub fn ssm_init(
-    init: &str,
-    n: usize,
-    rank: usize,
-    h: usize,
-) -> (Vec<C32>, Vec<C32>, Vec<C32>) {
+pub fn ssm_init(init: &str, n: usize, rank: usize, h: usize) -> (Vec<C32>, Vec<C32>, Vec<C32>) {
     let p_scale = if init.starts_with("diag") { 0.0 } else { 1.0 };
 
-    let actual_init = if init.starts_with("diag-") {
-        &init[5..]
-    } else if init.starts_with("dplr-") {
-        &init[5..]
-    } else {
-        init
-    };
+    let actual_init = init
+        .strip_prefix("diag-")
+        .or_else(|| init.strip_prefix("dplr-"))
+        .unwrap_or(init);
 
     let (a, p, b, _v) = dplr(
         actual_init,
-        n, rank, h,
-        1.0,  // real_scale
-        1.0,  // imag_scale
+        n,
+        rank,
+        h,
+        1.0, // real_scale
+        1.0, // imag_scale
         "constant",
-        1.0,  // b_scale
+        1.0, // b_scale
         p_scale,
     );
 
@@ -270,7 +258,11 @@ mod tests {
         let (a, _, _, _) = dplr("real", 8, 1, 2, 1.0, 1.0, "constant", 1.0, 0.0);
         // Real init: imag should be 0
         for &ai in &a {
-            assert!(ai.im.abs() < 1e-6, "Real init should have 0 imag: {}", ai.im);
+            assert!(
+                ai.im.abs() < 1e-6,
+                "Real init should have 0 imag: {}",
+                ai.im
+            );
         }
     }
 

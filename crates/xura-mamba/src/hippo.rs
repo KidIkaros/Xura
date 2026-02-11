@@ -103,12 +103,12 @@ fn transition_legt(n: usize) -> (Vec<f32>, Vec<f32>) {
     let mut a = vec![0.0f32; n * n];
     for i in 0..n {
         for j in 0..n {
-            let sign = if (i as i32 - j as i32) % 2 == 0 { 1.0 } else { -1.0 };
-            let val = if i < j {
-                sign
-            } else {
+            let sign = if (i as i32 - j as i32) % 2 == 0 {
                 1.0
+            } else {
+                -1.0
             };
+            let val = if i < j { sign } else { 1.0 };
             a[i * n + j] = r[i] * val * r[j];
         }
     }
@@ -204,9 +204,9 @@ pub fn rank_correction(measure: &str, n: usize, rank: usize) -> Result<Vec<f32>,
             // P1: base with even indices zeroed
             for i in 0..n {
                 if i % 2 == 0 {
-                    p[0 * n + i] = base[i]; // P0: even indices
+                    p[i] = base[i]; // P0: even indices (row 0 starts at offset 0)
                 } else {
-                    p[1 * n + i] = base[i]; // P1: odd indices
+                    p[n + i] = base[i]; // P1: odd indices
                 }
             }
             // Scale by 2^(-0.5) to match halved matrix
@@ -261,7 +261,12 @@ fn transpose_nn(a: &[f32], n: usize) -> Vec<f32> {
 /// - P_out: projected P, shape (rank, N/2) complex
 /// - B_out: projected B, shape (N/2,) complex
 /// - V: eigenvectors, shape (N, N/2) complex
-pub fn nplr(measure: &str, n: usize, rank: usize, b_clip: Option<f32>) -> Result<(Vec<C32>, Vec<C32>, Vec<C32>, Vec<C32>), String> {
+pub fn nplr(
+    measure: &str,
+    n: usize,
+    rank: usize,
+    b_clip: Option<f32>,
+) -> Result<(Vec<C32>, Vec<C32>, Vec<C32>, Vec<C32>), String> {
     let (a_flat, b_vec) = transition(measure, n)?;
     let p_flat = rank_correction(measure, n, rank)?;
 
@@ -421,7 +426,9 @@ fn eigendecompose_hippo(a: &[f32], n: usize) -> (Vec<C32>, Vec<C32>) {
     let mut eigenvectors = vec![C32::new(0.0, 0.0); n * n];
 
     // Sort eigenvalues
-    let mut sorted_eigs: Vec<(usize, f32)> = eig_vals_sq.iter().enumerate()
+    let mut sorted_eigs: Vec<(usize, f32)> = eig_vals_sq
+        .iter()
+        .enumerate()
         .map(|(i, &v)| (i, v.max(0.0).sqrt()))
         .collect();
     sorted_eigs.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -499,8 +506,7 @@ fn jacobi_eigen(a: &[f32], n: usize, max_iter: usize) -> (Vec<f32>, Vec<f32>) {
         new_s[p * n + p] = cos_t * cos_t * s[p * n + p]
             + 2.0 * sin_t * cos_t * s[p * n + q]
             + sin_t * sin_t * s[q * n + q];
-        new_s[q * n + q] = sin_t * sin_t * s[p * n + p]
-            - 2.0 * sin_t * cos_t * s[p * n + q]
+        new_s[q * n + q] = sin_t * sin_t * s[p * n + p] - 2.0 * sin_t * cos_t * s[p * n + q]
             + cos_t * cos_t * s[q * n + q];
         new_s[p * n + q] = 0.0;
         new_s[q * n + p] = 0.0;
@@ -566,7 +572,11 @@ mod tests {
         let (w, _, _, _) = nplr("legs", 16, 1, Some(2.0)).unwrap();
         // All eigenvalues should have negative real part
         for &wi in &w {
-            assert!(wi.re < 0.1, "eigenvalue real part should be negative, got {}", wi.re);
+            assert!(
+                wi.re < 0.1,
+                "eigenvalue real part should be negative, got {}",
+                wi.re
+            );
         }
     }
 

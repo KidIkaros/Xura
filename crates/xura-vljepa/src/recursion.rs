@@ -43,7 +43,9 @@ impl ConfusionMonitor {
         let mut rng = rand::thread_rng();
         let std = (1.0 / confusion_dims as f32).sqrt();
         Self {
-            probe_weight: (0..confusion_dims).map(|_| rng.gen_range(-std..std)).collect(),
+            probe_weight: (0..confusion_dims)
+                .map(|_| rng.gen_range(-std..std))
+                .collect(),
             probe_bias: 0.0,
             confusion_dims,
             smoothing,
@@ -92,8 +94,7 @@ impl ConfusionMonitor {
         let score = sigmoid(logit);
 
         // EMA smoothing
-        self.smoothed_score = self.smoothing * score
-            + (1.0 - self.smoothing) * self.smoothed_score;
+        self.smoothed_score = self.smoothing * score + (1.0 - self.smoothing) * self.smoothed_score;
 
         (self.smoothed_score > self.threshold, self.smoothed_score)
     }
@@ -162,7 +163,10 @@ pub struct LocalMemoryTool {
 impl LocalMemoryTool {
     /// Create an empty local memory tool.
     pub fn new(knowledge_dim: usize) -> Self {
-        Self { entries: Vec::new(), knowledge_dim }
+        Self {
+            entries: Vec::new(),
+            knowledge_dim,
+        }
     }
 
     /// Add a (key, value) entry to the knowledge base.
@@ -204,8 +208,12 @@ impl LocalMemoryTool {
 }
 
 impl MemoryTool for LocalMemoryTool {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 
     fn recursive_search(&self, query: &[f32], depth: u8) -> Vec<f32> {
         if self.entries.is_empty() {
@@ -240,7 +248,11 @@ fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
         nb += b[i] * b[i];
     }
     let denom = na.sqrt() * nb.sqrt();
-    if denom < 1e-12 { 0.0 } else { dot / denom }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -266,7 +278,9 @@ impl StateInjector {
         let mut rng = rand::thread_rng();
         let std = (2.0 / (d_model + knowledge_dim) as f32).sqrt();
         Self {
-            weight: (0..d_model * knowledge_dim).map(|_| rng.gen_range(-std..std)).collect(),
+            weight: (0..d_model * knowledge_dim)
+                .map(|_| rng.gen_range(-std..std))
+                .collect(),
             d_model,
             knowledge_dim,
         }
@@ -462,7 +476,7 @@ mod tests {
     fn test_confusion_monitor_static() {
         let mut mon = ConfusionMonitor::new(8, 0.5, 0.9);
         let hidden = vec![0.1f32; 4 * 8]; // batch=1, seq=4, d_model=8
-        // Static input should not trigger (score is near sigmoid(small) ≈ 0.5)
+                                          // Static input should not trigger (score is near sigmoid(small) ≈ 0.5)
         for _ in 0..10 {
             let (triggered, _score) = mon.evaluate(&hidden, 1, 4, 8);
             // With random weights, score stabilizes; we just check it's finite

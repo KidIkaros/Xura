@@ -1,8 +1,9 @@
 use std::fmt;
 
 /// Compute device for tensor storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Device {
+    #[default]
     Cpu,
     Cuda(usize),
 }
@@ -21,12 +22,6 @@ impl Device {
             Device::Cuda(idx) => Some(*idx),
             _ => None,
         }
-    }
-}
-
-impl Default for Device {
-    fn default() -> Self {
-        Device::Cpu
     }
 }
 

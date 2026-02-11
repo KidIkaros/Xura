@@ -56,7 +56,9 @@ impl S4Block {
         layer_idx: Option<usize>,
     ) -> Self {
         let channels = 1;
-        let layer = FFTConv::new(d_model, d_state, channels, mode, init, activation, dt_min, dt_max);
+        let layer = FFTConv::new(
+            d_model, d_state, channels, mode, init, activation, dt_min, dt_max,
+        );
 
         let mut rng = rand::thread_rng();
 
@@ -155,8 +157,7 @@ impl S4Block {
         for b in 0..batch {
             for l in 0..seq_len {
                 for h in 0..d {
-                    x_bhl[b * d * seq_len + h * seq_len + l] =
-                        normed[b * seq_len * d + l * d + h];
+                    x_bhl[b * d * seq_len + h * seq_len + l] = normed[b * seq_len * d + l * d + h];
                 }
             }
         }
@@ -169,16 +170,14 @@ impl S4Block {
         for b in 0..batch {
             for l in 0..seq_len {
                 for h in 0..d {
-                    y_bld[b * seq_len * d + l * d + h] =
-                        y_bhl[b * d * seq_len + h * seq_len + l];
+                    y_bld[b * seq_len * d + l * d + h] = y_bhl[b * d * seq_len + h * seq_len + l];
                 }
             }
         }
 
         // 5. Output linear with GLU
-        let y_out = self.output_linear(&y_bld, n);
 
-        y_out
+        self.output_linear(&y_bld, n)
     }
 
     /// Set up recurrent step parameters.
@@ -194,12 +193,7 @@ impl S4Block {
     /// `input`: shape (batch, d_model)
     /// `state`: mutable SSM state
     /// Returns: shape (batch, d_model)
-    pub fn forward_step(
-        &self,
-        input: &[f32],
-        batch: usize,
-        state: &mut [f32],
-    ) -> Vec<f32> {
+    pub fn forward_step(&self, input: &[f32], batch: usize, state: &mut [f32]) -> Vec<f32> {
         let da = self.step_da.as_ref().expect("Call setup_step() first");
         let db = self.step_db.as_ref().expect("Call setup_step() first");
         let dc = self.step_dc.as_ref().expect("Call setup_step() first");
@@ -211,9 +205,8 @@ impl S4Block {
         let y = self.layer.step(&normed, state, da, db, dc, batch);
 
         // 3. Output linear
-        let y_out = self.output_linear(&y, batch);
 
-        y_out
+        self.output_linear(&y, batch)
     }
 
     /// State size for this block.

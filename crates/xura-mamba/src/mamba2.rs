@@ -7,8 +7,8 @@
 
 use rand::Rng;
 
-use xura_core::Tensor;
 use xura_core::Module;
+use xura_core::Tensor;
 
 use crate::causal_conv1d;
 use crate::norm::RMSNormGated;
@@ -63,8 +63,17 @@ pub struct Mamba2 {
 
 impl Mamba2 {
     /// Create a new Mamba-2 block with default options.
-    pub fn new(d_model: usize, d_state: usize, d_conv: usize, expand: usize, headdim: usize) -> Self {
-        Self::new_full(d_model, d_state, d_conv, expand, headdim, None, 1, false, true, false, false, true, 256, None)
+    pub fn new(
+        d_model: usize,
+        d_state: usize,
+        d_conv: usize,
+        expand: usize,
+        headdim: usize,
+    ) -> Self {
+        Self::new_full(
+            d_model, d_state, d_conv, expand, headdim, None, 1, false, true, false, false, true,
+            256, None,
+        )
     }
 
     /// Create with full configuration.
@@ -87,7 +96,10 @@ impl Mamba2 {
     ) -> Self {
         let d_inner = expand * d_model;
         let d_ssm = d_ssm.unwrap_or(d_inner);
-        assert!(d_ssm % headdim == 0, "d_ssm must be divisible by headdim");
+        assert!(
+            d_ssm.is_multiple_of(headdim),
+            "d_ssm must be divisible by headdim"
+        );
         let nheads = d_ssm / headdim;
 
         let mut rng = rand::thread_rng();
@@ -145,7 +157,12 @@ impl Mamba2 {
 
         // RMSNormGated
         let norm = if rmsnorm {
-            Some(RMSNormGated::new(d_ssm, 1e-5, norm_before_gate, d_ssm / ngroups))
+            Some(RMSNormGated::new(
+                d_ssm,
+                1e-5,
+                norm_before_gate,
+                d_ssm / ngroups,
+            ))
         } else {
             None
         };
@@ -221,7 +238,8 @@ impl Mamba2 {
 
         // 2) Split: [z(d_inner), x_ssm_and_mlp, xBC(d_ssm + 2*ngroups*d_state), dt(nheads)]
         //    d_mlp = (d_in_proj - 2*d_ssm - 2*ngroups*d_state - nheads) / 2
-        let d_mlp = (d_in_proj - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) / 2;
+        let d_mlp =
+            (d_in_proj - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) / 2;
         // Offsets within d_in_proj:
         let z0_start = 0;
         let x0_start = d_mlp;
@@ -243,9 +261,14 @@ impl Mamba2 {
         }
 
         let xbc_conv = causal_conv1d::causal_conv1d_fn(
-            &xbc_bcl, batch, cd, seq_len,
-            &self.conv1d_weight, self.d_conv,
-            self.conv1d_bias.as_deref(), true,
+            &xbc_bcl,
+            batch,
+            cd,
+            seq_len,
+            &self.conv1d_weight,
+            self.d_conv,
+            self.conv1d_bias.as_deref(),
+            true,
         );
 
         // 4) Split convolved xBC back to (B, L, ...): x_ssm, B_ssm, C_ssm
@@ -267,8 +290,8 @@ impl Mamba2 {
                     let p = i % self.headdim;
                     x_scan[b * seq_len * self.nheads * self.headdim
                         + l * self.nheads * self.headdim
-                        + h * self.headdim + p] =
-                        xbc_conv[b * cd * seq_len + i * seq_len + l];
+                        + h * self.headdim
+                        + p] = xbc_conv[b * cd * seq_len + i * seq_len + l];
                 }
                 // B: next ngroups*d_state channels
                 for i in 0..ngs {
@@ -309,7 +332,8 @@ impl Mamba2 {
                         let p = i % self.headdim;
                         z_scan[b * seq_len * self.nheads * self.headdim
                             + l * self.nheads * self.headdim
-                            + h * self.headdim + p] = proj[src + i];
+                            + h * self.headdim
+                            + p] = proj[src + i];
                     }
                 }
             }
@@ -320,8 +344,17 @@ impl Mamba2 {
 
         // 8) Run SSD scan
         let scan_result = ssd::mamba_chunk_scan_combined(
-            &x_scan, batch, seq_len, self.nheads, self.headdim,
-            &dt_scan, &a_neg, &b_scan, self.ngroups, self.d_state, &c_scan,
+            &x_scan,
+            batch,
+            seq_len,
+            self.nheads,
+            self.headdim,
+            &dt_scan,
+            &a_neg,
+            &b_scan,
+            self.ngroups,
+            self.d_state,
+            &c_scan,
             Some(&self.d_skip),
             z_for_scan.as_deref(),
             Some(&self.dt_bias),
@@ -339,7 +372,8 @@ impl Mamba2 {
                     y_flat[b * seq_len * self.d_ssm + l * self.d_ssm + i] =
                         scan_result.output[b * seq_len * self.nheads * self.headdim
                             + l * self.nheads * self.headdim
-                            + h * self.headdim + p];
+                            + h * self.headdim
+                            + p];
                 }
             }
         }
@@ -427,7 +461,8 @@ impl Mamba2 {
         let dm = self.d_model;
         let di = self.d_inner;
         let d_in_proj = 2 * di + 2 * self.ngroups * self.d_state + self.nheads;
-        let d_mlp = (d_in_proj - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) / 2;
+        let d_mlp =
+            (d_in_proj - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) / 2;
 
         let z0_start = 0;
         let x0_start = d_mlp;
@@ -461,8 +496,14 @@ impl Mamba2 {
         }
 
         let xbc_conv = causal_conv1d::causal_conv1d_update(
-            &xbc_step, batch, cd, conv_state, self.d_conv,
-            &self.conv1d_weight, self.conv1d_bias.as_deref(), true,
+            &xbc_step,
+            batch,
+            cd,
+            conv_state,
+            self.d_conv,
+            &self.conv1d_weight,
+            self.conv1d_bias.as_deref(),
+            true,
         );
 
         // 3) Split: x_ssm (d_ssm), B (ngs), C (ngs)
@@ -511,11 +552,20 @@ impl Mamba2 {
 
         // 7) SSM step
         let y_bhp = ssd::mamba2_ssm_step(
-            &x_step, batch, self.nheads, self.headdim,
-            &dt_step, &a_neg, &b_step, self.ngroups, self.d_state, &c_step,
+            &x_step,
+            batch,
+            self.nheads,
+            self.headdim,
+            &dt_step,
+            &a_neg,
+            &b_step,
+            self.ngroups,
+            self.d_state,
+            &c_step,
             Some(&self.d_skip),
             z_for_step.as_deref(),
-            Some(&self.dt_bias), true,
+            Some(&self.dt_bias),
+            true,
             ssm_state,
         );
 
@@ -525,7 +575,8 @@ impl Mamba2 {
             for i in 0..self.d_ssm {
                 let h = i / self.headdim;
                 let p = i % self.headdim;
-                y_flat[b * self.d_ssm + i] = y_bhp[b * self.nheads * self.headdim + h * self.headdim + p];
+                y_flat[b * self.d_ssm + i] =
+                    y_bhp[b * self.nheads * self.headdim + h * self.headdim + p];
             }
         }
 
@@ -591,7 +642,12 @@ impl Mamba2 {
     pub fn param_count(&self) -> usize {
         let d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads;
         let in_proj = d_in_proj * self.d_model;
-        let conv = self.conv_dim * self.d_conv + if self.conv1d_bias.is_some() { self.conv_dim } else { 0 };
+        let conv = self.conv_dim * self.d_conv
+            + if self.conv1d_bias.is_some() {
+                self.conv_dim
+            } else {
+                0
+            };
         let dt_bias = self.nheads;
         let a_log = self.nheads;
         let d_skip = self.d_skip.len();
@@ -610,7 +666,7 @@ impl Module for Mamba2 {
     fn forward(&self, input: &Tensor) -> xura_core::Result<Tensor> {
         let dims = input.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![0, 0, 0],
                 got: dims,
             });
@@ -619,25 +675,33 @@ impl Module for Mamba2 {
         let seq_len = dims[1];
         let d = dims[2];
         if d != self.d_model {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![batch, seq_len, self.d_model],
                 got: dims,
             });
         }
 
         let data = input.contiguous();
-        let x = data.as_f32_slice().ok_or_else(|| {
-            xura_core::KoreError::UnsupportedDType(input.dtype())
-        })?;
+        let x = data
+            .as_f32_slice()
+            .ok_or_else(|| xura_core::XuraError::UnsupportedDType(input.dtype()))?;
 
         let output = self.forward_train(x, batch, seq_len);
         Ok(Tensor::from_f32(&output, &[batch, seq_len, self.d_model]))
     }
 
-    fn parameters(&self) -> Vec<&Tensor> { vec![] }
-    fn named_parameters(&self) -> Vec<(&str, &Tensor)> { vec![] }
-    fn train(&mut self, mode: bool) { self.training = mode; }
-    fn is_training(&self) -> bool { self.training }
+    fn parameters(&self) -> Vec<&Tensor> {
+        vec![]
+    }
+    fn named_parameters(&self) -> Vec<(&str, &Tensor)> {
+        vec![]
+    }
+    fn train(&mut self, mode: bool) {
+        self.training = mode;
+    }
+    fn is_training(&self) -> bool {
+        self.training
+    }
 }
 
 #[cfg(test)]

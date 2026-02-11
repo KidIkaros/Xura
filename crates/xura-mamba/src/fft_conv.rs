@@ -3,10 +3,10 @@
 //! Generates a convolution kernel from SSM parameters, then applies it to the input
 //! using FFT-based convolution: y = IFFT(FFT(x) * FFT(k)) + D*x.
 
-use rustfft::{FftPlanner, num_complex::Complex as RustFftComplex};
+use rustfft::{num_complex::Complex as RustFftComplex, FftPlanner};
 
 use crate::complex_utils::C32;
-use crate::s4_kernel::{SSMKernelDiag, SSMKernelDPLR, Discretization};
+use crate::s4_kernel::{Discretization, SSMKernelDPLR, SSMKernelDiag};
 
 /// SiLU activation.
 #[inline]
@@ -17,7 +17,7 @@ fn silu(x: f32) -> f32 {
 /// GELU activation (approximate).
 #[inline]
 fn gelu(x: f32) -> f32 {
-    0.5 * x * (1.0 + (0.7978845608 * (x + 0.044715 * x * x * x)).tanh())
+    0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044715 * x * x * x)).tanh())
 }
 
 /// Which S4 kernel variant to use.
@@ -48,7 +48,15 @@ impl S4KernelType {
         }
     }
 
-    pub fn step(&self, u: &[f32], state: &mut [f32], da: &[C32], db: &[C32], dc: &[C32], batch: usize) -> Vec<f32> {
+    pub fn step(
+        &self,
+        u: &[f32],
+        state: &mut [f32],
+        da: &[C32],
+        db: &[C32],
+        dc: &[C32],
+        batch: usize,
+    ) -> Vec<f32> {
         match self {
             S4KernelType::Diag(k) => k.step(u, state, da, db, dc, batch),
             S4KernelType::DPLR(k) => k.step(u, state, da, db, dc, batch),
@@ -109,17 +117,28 @@ impl FFTConv {
         dt_max: f32,
     ) -> Self {
         let kernel = match mode {
-            "s4" | "nplr" | "dplr" => {
-                S4KernelType::DPLR(SSMKernelDPLR::new(
-                    d_model, d_state, channels, init, 1,
-                    dt_min, dt_max, Discretization::Zoh, None,
-                ))
-            }
+            "s4" | "nplr" | "dplr" => S4KernelType::DPLR(SSMKernelDPLR::new(
+                d_model,
+                d_state,
+                channels,
+                init,
+                1,
+                dt_min,
+                dt_max,
+                Discretization::Zoh,
+                None,
+            )),
             _ => {
                 // Default: S4D (diagonal)
                 S4KernelType::Diag(SSMKernelDiag::new(
-                    d_model, d_state, channels, init,
-                    dt_min, dt_max, Discretization::Zoh, None,
+                    d_model,
+                    d_state,
+                    channels,
+                    init,
+                    dt_min,
+                    dt_max,
+                    Discretization::Zoh,
+                    None,
                 ))
             }
         };
@@ -163,21 +182,25 @@ impl FFTConv {
             for ci in 0..c {
                 for hi in 0..h {
                     // Prepare kernel FFT
-                    let mut k_buf: Vec<RustFftComplex<f32>> = vec![RustFftComplex::new(0.0, 0.0); conv_len];
+                    let mut k_buf: Vec<RustFftComplex<f32>> =
+                        vec![RustFftComplex::new(0.0, 0.0); conv_len];
                     for l in 0..seq_len {
                         k_buf[l] = RustFftComplex::new(k[ci * h * seq_len + hi * seq_len + l], 0.0);
                     }
                     fft.process(&mut k_buf);
 
                     // Prepare input FFT
-                    let mut x_buf: Vec<RustFftComplex<f32>> = vec![RustFftComplex::new(0.0, 0.0); conv_len];
+                    let mut x_buf: Vec<RustFftComplex<f32>> =
+                        vec![RustFftComplex::new(0.0, 0.0); conv_len];
                     for l in 0..seq_len {
                         x_buf[l] = RustFftComplex::new(x[bi * h * seq_len + hi * seq_len + l], 0.0);
                     }
                     fft.process(&mut x_buf);
 
                     // Multiply in frequency domain
-                    let mut y_buf: Vec<RustFftComplex<f32>> = k_buf.iter().zip(x_buf.iter())
+                    let mut y_buf: Vec<RustFftComplex<f32>> = k_buf
+                        .iter()
+                        .zip(x_buf.iter())
                         .map(|(&ki, &xi)| ki * xi)
                         .collect();
 

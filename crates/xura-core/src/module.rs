@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Tensor, Result};
+use crate::{Result, Tensor};
 
 /// Base trait for all neural network modules.
 pub trait Module: Send + Sync {

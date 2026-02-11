@@ -11,7 +11,10 @@ use std::path::Path;
 pub enum LoadError {
     Io(std::io::Error),
     SafeTensors(String),
-    ShapeMismatch { expected: Vec<usize>, got: Vec<usize> },
+    ShapeMismatch {
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
     MissingKey(String),
 }
 
@@ -20,8 +23,9 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Io(e) => write!(f, "IO error: {}", e),
             LoadError::SafeTensors(e) => write!(f, "SafeTensors error: {}", e),
-            LoadError::ShapeMismatch { expected, got } =>
-                write!(f, "Shape mismatch: expected {:?}, got {:?}", expected, got),
+            LoadError::ShapeMismatch { expected, got } => {
+                write!(f, "Shape mismatch: expected {:?}, got {:?}", expected, got)
+            }
             LoadError::MissingKey(k) => write!(f, "Missing key: {}", k),
         }
     }
@@ -80,9 +84,10 @@ pub fn load_safetensors(
                     .collect()
             }
             _ => {
-                return Err(LoadError::SafeTensors(
-                    format!("Unsupported dtype {:?} for tensor {}", dtype, name),
-                ));
+                return Err(LoadError::SafeTensors(format!(
+                    "Unsupported dtype {:?} for tensor {}",
+                    dtype, name
+                )));
             }
         };
 

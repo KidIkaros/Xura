@@ -34,8 +34,8 @@ impl DType {
     /// Number of bytes needed to store `n` elements of this dtype.
     pub fn storage_bytes(&self, n: usize) -> usize {
         match self {
-            DType::Ternary => (n + 4) / 5,
-            DType::Quaternary => (n + 3) / 4,
+            DType::Ternary => n.div_ceil(5),
+            DType::Quaternary => n.div_ceil(4),
             other => other.element_size().unwrap() * n,
         }
     }

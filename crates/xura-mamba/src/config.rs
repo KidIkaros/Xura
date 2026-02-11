@@ -49,20 +49,48 @@ pub struct SsmConfig {
     pub trapezoidal_alpha: f32,
 }
 
-fn default_ssm_layer() -> String { "Mamba1".to_string() }
-fn default_d_state() -> usize { 16 }
-fn default_d_conv() -> usize { 4 }
-fn default_expand() -> usize { 2 }
-fn default_headdim() -> usize { 64 }
-fn default_ngroups() -> usize { 1 }
-fn default_chunk_size() -> usize { 256 }
-fn default_s4_mode() -> String { "s4d".to_string() }
-fn default_s4_init() -> String { "diag-inv".to_string() }
-fn default_s4_activation() -> String { "gelu".to_string() }
-fn default_s4_dt_min() -> f32 { 0.001 }
-fn default_s4_dt_max() -> f32 { 0.1 }
-fn default_use_rope() -> bool { true }
-fn default_trapezoidal_alpha() -> f32 { 0.5 }
+fn default_ssm_layer() -> String {
+    "Mamba1".to_string()
+}
+fn default_d_state() -> usize {
+    16
+}
+fn default_d_conv() -> usize {
+    4
+}
+fn default_expand() -> usize {
+    2
+}
+fn default_headdim() -> usize {
+    64
+}
+fn default_ngroups() -> usize {
+    1
+}
+fn default_chunk_size() -> usize {
+    256
+}
+fn default_s4_mode() -> String {
+    "s4d".to_string()
+}
+fn default_s4_init() -> String {
+    "diag-inv".to_string()
+}
+fn default_s4_activation() -> String {
+    "gelu".to_string()
+}
+fn default_s4_dt_min() -> f32 {
+    0.001
+}
+fn default_s4_dt_max() -> f32 {
+    0.1
+}
+fn default_use_rope() -> bool {
+    true
+}
+fn default_trapezoidal_alpha() -> f32 {
+    0.5
+}
 
 impl Default for SsmConfig {
     fn default() -> Self {
@@ -109,17 +137,25 @@ pub struct MambaConfig {
     pub norm_epsilon: f32,
 }
 
-fn default_rms_norm() -> bool { true }
-fn default_pad_vocab_size_multiple() -> usize { 1 }
-fn default_tie_embeddings() -> bool { true }
-fn default_norm_epsilon() -> f32 { 1e-5 }
+fn default_rms_norm() -> bool {
+    true
+}
+fn default_pad_vocab_size_multiple() -> usize {
+    1
+}
+fn default_tie_embeddings() -> bool {
+    true
+}
+fn default_norm_epsilon() -> f32 {
+    1e-5
+}
 
 impl MambaConfig {
     /// Padded vocab size (rounded up to pad_vocab_size_multiple).
     pub fn padded_vocab_size(&self) -> usize {
         let v = self.vocab_size;
         let m = self.pad_vocab_size_multiple;
-        if m <= 1 || v % m == 0 {
+        if m <= 1 || v.is_multiple_of(m) {
             v
         } else {
             v + m - (v % m)
@@ -133,7 +169,11 @@ impl MambaConfig {
             n_layer: 24,
             d_intermediate: 0,
             vocab_size: 50280,
-            ssm_cfg: SsmConfig { layer: "Mamba1".into(), d_state: 16, ..Default::default() },
+            ssm_cfg: SsmConfig {
+                layer: "Mamba1".into(),
+                d_state: 16,
+                ..Default::default()
+            },
             rms_norm: true,
             residual_in_fp32: true,
             fused_add_norm: false,
@@ -150,7 +190,11 @@ impl MambaConfig {
             n_layer: 48,
             d_intermediate: 0,
             vocab_size: 50280,
-            ssm_cfg: SsmConfig { layer: "Mamba1".into(), d_state: 16, ..Default::default() },
+            ssm_cfg: SsmConfig {
+                layer: "Mamba1".into(),
+                d_state: 16,
+                ..Default::default()
+            },
             rms_norm: true,
             residual_in_fp32: true,
             fused_add_norm: false,

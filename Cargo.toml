@@ -31,6 +31,12 @@ xura-core = { path = "crates/xura-core" }
 xura-mamba = { path = "crates/xura-mamba" }
 xura-vljepa = { path = "crates/xura-vljepa" }
 
+[workspace.lints.clippy]
+too_many_arguments = "allow"     # Numerical code often needs many parameters
+type_complexity = "allow"        # Complex return types in loader are intentional
+needless_range_loop = "allow"    # Index-based loops are clearer in numerical code
+manual_memcpy = "allow"          # Explicit copy loops match math notation
+
 [profile.release]
 opt-level = 3
 lto = true
