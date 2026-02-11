@@ -295,6 +295,12 @@ pub fn read_index(path: &str) -> io::Result<Vec<IndexEntry>> {
             Err(e) => return Err(e),
         }
         let len = u32::from_le_bytes(len_buf) as usize;
+        if len > 10_000_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("index entry too large ({} bytes), likely corrupt", len),
+            ));
+        }
         let mut payload = vec![0u8; len];
         file.read_exact(&mut payload)?;
         let entry: IndexEntry = bincode::deserialize(&payload).map_err(|e| {
