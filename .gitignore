@@ -1,1 +1,16 @@
 target/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Training artifacts
+training/checkpoints/
+training/data/sample/
+
+# IDE
+.idea/
+.vscode/
+*.swp

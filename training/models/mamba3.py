@@ -77,6 +77,8 @@ def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.T
     """Apply rotary position embedding to input tensor."""
     d = x.shape[-1]
     x1, x2 = x[..., : d // 2], x[..., d // 2 :]
+    cos = cos[..., : d // 2]
+    sin = sin[..., : d // 2]
     return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
 
 
@@ -114,9 +116,10 @@ class Mamba3Layer(nn.Module):
 
         # SSM parameters
         # A is stored as log for numerical stability (complex-valued in Mamba-3)
-        self.A_log = nn.Parameter(torch.randn(self.nheads))
+        # Initialize A_log ~ U(0.001, 0.1) so A = -exp(A_log) stays small and stable
+        self.A_log = nn.Parameter(torch.log(torch.linspace(0.001, 0.1, self.nheads)))
         self.D = nn.Parameter(torch.ones(self.nheads))
-        self.dt_bias = nn.Parameter(torch.randn(self.nheads) * 0.1)
+        self.dt_bias = nn.Parameter(torch.zeros(self.nheads))
 
         # Output projection
         self.out_proj = nn.Linear(d_inner, config.d_model, bias=False)
@@ -161,8 +164,8 @@ class Mamba3Layer(nn.Module):
         # Discretize dt: softplus(dt_raw + dt_bias)
         dt = F.softplus(dt_raw + self.dt_bias)  # (batch, seq_len, nheads)
 
-        # SSM: A (negative for stability)
-        A = -torch.exp(self.A_log)  # (nheads,)
+        # SSM: A (negative for stability), clamped to prevent overflow
+        A = -torch.exp(self.A_log.clamp(max=5.0))  # (nheads,)
 
         # Trapezoidal discretization:
         #   A_bar = exp(A * dt)  [ZOH part]
@@ -188,8 +191,8 @@ class Mamba3Layer(nn.Module):
             C_t = C_expanded[:, t]       # (B, nheads, d_state)
             dt_t = dt[:, t].unsqueeze(-1)  # (B, nheads, 1)
 
-            # Trapezoidal discretization
-            A_disc = torch.exp(A.unsqueeze(0) * dt_t)  # (B, nheads, 1)
+            # Trapezoidal discretization (clamp exponent for stability)
+            A_disc = torch.exp((A.unsqueeze(0).unsqueeze(-1) * dt_t).clamp(-20, 0))  # (B, nheads, 1)
 
             # State update: h = A_bar * h + dt * B * x (simplified)
             # Input contribution: use mean of x across headdim as scalar modulator
