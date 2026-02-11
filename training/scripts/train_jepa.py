@@ -651,6 +651,10 @@ def main():
     parser.add_argument("--warmup-steps", type=int, default=1000)
     parser.add_argument("--max-seq-len", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--seq-len", type=int, default=16,
+                        help="Frames per chunk for Mamba parallel scan (default 16)")
+    parser.add_argument("--frame-skip", type=int, default=5,
+                        help="Keep every Nth frame from video (default 5 → ~6 eff. FPS)")
     parser.add_argument("--save-every", type=int, default=5,
                         help="Save checkpoint every N epochs")
     parser.add_argument("--grad-accum", type=int, default=1,
@@ -673,10 +677,6 @@ def main():
                         help="HTTP/S3 video URLs (streaming mode)")
     parser.add_argument("--total-steps", type=int, default=50000,
                         help="Total training steps for streaming mode")
-    parser.add_argument("--seq-len", type=int, default=16,
-                        help="Frames per chunk for Mamba parallel scan (default 16)")
-    parser.add_argument("--frame-skip", type=int, default=5,
-                        help="Keep every Nth frame from video (default 5 → ~6 eff. FPS)")
     parser.add_argument("--save-every-steps", type=int, default=5000,
                         help="Checkpoint interval in streaming mode (steps)")
     args = parser.parse_args()

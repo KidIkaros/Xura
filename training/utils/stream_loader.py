@@ -50,6 +50,7 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
 
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
+_MIN_VIDEO_FILE_BYTES = 10_000  # Minimum file size to consider a download valid
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -130,7 +131,7 @@ class YouTubeSource(VideoSource):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([video_id])
-            if os.path.isfile(out_path) and os.path.getsize(out_path) >= 10_000:
+            if os.path.isfile(out_path) and os.path.getsize(out_path) >= _MIN_VIDEO_FILE_BYTES:
                 return out_path
             if os.path.isfile(out_path):
                 os.remove(out_path)
@@ -198,8 +199,10 @@ class URLListSource(VideoSource):
         ext = Path(video_id.split("?")[0]).suffix or ".mp4"
         out_path = os.path.join(out_dir, f"video_{idx:05d}{ext}")
         try:
-            urllib.request.urlretrieve(video_id, out_path)
-            if os.path.isfile(out_path) and os.path.getsize(out_path) >= 10_000:
+            with urllib.request.urlopen(video_id, timeout=self.timeout) as resp:
+                with open(out_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+            if os.path.isfile(out_path) and os.path.getsize(out_path) >= _MIN_VIDEO_FILE_BYTES:
                 return out_path
             if os.path.isfile(out_path):
                 os.remove(out_path)
