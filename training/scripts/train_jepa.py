@@ -209,6 +209,36 @@ def detach_states(states: list[torch.Tensor] | None) -> list[torch.Tensor] | Non
     return [s.detach() for s in states]
 
 
+def mask_states(
+    states: list[torch.Tensor] | None,
+    is_episode_start: torch.Tensor,
+    device: torch.device,
+) -> list[torch.Tensor] | None:
+    """Zero out SSM states only for samples that start a new episode.
+
+    Per-sample masking: samples mid-episode keep their state, while samples
+    at episode boundaries get their state reset to zero. This preserves
+    temporal continuity for the rest of the batch.
+
+    Args:
+        states: Per-layer SSM states, each (batch, nheads, d_state).
+        is_episode_start: (batch,) bool tensor — True for new episodes.
+        device: Target device.
+
+    Returns:
+        Masked states (same structure), or None if states was None.
+    """
+    if states is None:
+        return None
+    if not is_episode_start.any().item():
+        return states
+    # keep_mask: True = keep state, False = zero out
+    keep_mask = (~is_episode_start).float().to(device)
+    # Broadcast (B,) → (B, 1, 1) to match (B, nheads, d_state)
+    keep_mask = keep_mask.unsqueeze(-1).unsqueeze(-1)
+    return [s * keep_mask for s in states]
+
+
 def state_norms(states: list[torch.Tensor] | None) -> list[float]:
     """Compute L2 norms of each layer's SSM state for monitoring."""
     if states is None:
@@ -256,11 +286,10 @@ def train_one_epoch(
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
-        # Reset state at episode boundaries
-        # If ANY sample in the batch starts a new episode, reset state.
-        # (For simplicity; a more advanced version would track per-sample state.)
+        # Per-sample state masking: zero out state only for samples starting
+        # a new episode, preserving temporal continuity for the rest of the batch.
+        persistent_state = mask_states(persistent_state, is_episode_start, device)
         if is_episode_start.any().item():
-            persistent_state = None
             n_state_resets += 1
 
         # Query embeddings: use Y-encoder's embedding layer as query source
@@ -374,8 +403,7 @@ def validate(
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
-        if is_episode_start.any().item():
-            persistent_state = None
+        persistent_state = mask_states(persistent_state, is_episode_start, device)
 
         query_embeds = model.y_encoder.embedding(tokens)
         qry_dim = model.predictor.query_proj.in_features
@@ -459,9 +487,9 @@ def train_streaming(
         tokens = batch["tokens"].to(device)
         is_episode_start = batch["is_episode_start"]
 
-        # Reset state at episode boundaries
+        # Per-sample state masking at episode boundaries
+        persistent_state = mask_states(persistent_state, is_episode_start, device)
         if is_episode_start.any().item():
-            persistent_state = None
             n_state_resets += 1
 
         # Query embeddings
