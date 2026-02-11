@@ -29,40 +29,34 @@
 //! let output = model.infer(&image, &query, h, h, InferenceMode::Embedding);
 //! ```
 
-pub mod config;
-pub mod loss;
-pub mod vit;
-pub mod predictor;
-pub mod y_encoder;
-pub mod y_decoder;
-pub mod vljepa;
-pub mod selective_decode;
-pub mod recursion;
-pub mod angn;
-pub mod tools;
 pub mod agent;
+pub mod angn;
+pub mod config;
 pub mod loader;
+pub mod loss;
+pub mod predictor;
+pub mod recursion;
+pub mod selective_decode;
+pub mod tools;
+pub mod vit;
+pub mod vljepa;
+pub mod y_decoder;
+pub mod y_encoder;
 
-pub use config::{
-    VitConfig,
-    Mamba3PredictorConfig,
-    Mamba3TextEncoderConfig,
-    Mamba3DecoderConfig,
-    Mamba3JepaConfig,
-    RecursionConfig,
-};
-pub use loss::info_nce_loss;
-pub use vit::VisionEncoder;
-pub use predictor::Mamba3Predictor;
-pub use y_encoder::Mamba3TextEncoder;
-pub use y_decoder::Mamba3Decoder;
-pub use vljepa::{Mamba3Jepa, TrainOutput, InferenceMode, InferenceOutput};
-pub use selective_decode::{SelectiveDecoder, SelectiveDecodeConfig};
-pub use loader::{load_safetensors, load_vit_weights, LoadError};
-pub use recursion::{
-    RecursionLayer, ConfusionMonitor, MemoryTool, LocalMemoryTool, StateInjector,
-};
-pub use angn::{AdaptiveNeuralGate, ANGNConfig};
+pub use agent::{AgentInput, AgentOutput, Mamba3Agent, ToolCallRecord};
+pub use angn::{ANGNConfig, AdaptiveNeuralGate};
 pub use config::AgentConfig;
-pub use tools::{Tool, ToolRegistry, ToolRequest, ToolResult, MemorySearchTool, EchoTool};
-pub use agent::{Mamba3Agent, AgentInput, AgentOutput, ToolCallRecord};
+pub use config::{
+    Mamba3DecoderConfig, Mamba3JepaConfig, Mamba3PredictorConfig, Mamba3TextEncoderConfig,
+    RecursionConfig, VitConfig,
+};
+pub use loader::{load_safetensors, load_vit_weights, LoadError};
+pub use loss::info_nce_loss;
+pub use predictor::Mamba3Predictor;
+pub use recursion::{ConfusionMonitor, LocalMemoryTool, MemoryTool, RecursionLayer, StateInjector};
+pub use selective_decode::{SelectiveDecodeConfig, SelectiveDecoder};
+pub use tools::{EchoTool, MemorySearchTool, Tool, ToolRegistry, ToolRequest, ToolResult};
+pub use vit::VisionEncoder;
+pub use vljepa::{InferenceMode, InferenceOutput, Mamba3Jepa, TrainOutput};
+pub use y_decoder::Mamba3Decoder;
+pub use y_encoder::Mamba3TextEncoder;

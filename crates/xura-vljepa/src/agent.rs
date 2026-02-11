@@ -134,6 +134,7 @@ pub struct Mamba3Agent {
 
 /// An entry in the agent's episodic memory.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct EpisodicEntry {
     embedding: Vec<f32>,
     response_tokens: Vec<usize>,
@@ -142,18 +143,13 @@ struct EpisodicEntry {
 
 impl Mamba3Agent {
     /// Build a new agent from model and agent configs.
-    pub fn new(
-        model_config: Mamba3JepaConfig,
-        agent_config: AgentConfig,
-    ) -> Self {
+    pub fn new(model_config: Mamba3JepaConfig, agent_config: AgentConfig) -> Self {
         let selective_decoder = SelectiveDecoder::new(agent_config.selective_decode.clone());
-        let knowledge_dim = model_config.recursion.knowledge_dim.max(
-            model_config.shared_embed_dim,
-        );
-        let tool_injector = StateInjector::new(
-            model_config.shared_embed_dim,
-            knowledge_dim,
-        );
+        let knowledge_dim = model_config
+            .recursion
+            .knowledge_dim
+            .max(model_config.shared_embed_dim);
+        let tool_injector = StateInjector::new(model_config.shared_embed_dim, knowledge_dim);
         let model = Mamba3Jepa::new(model_config);
 
         Self {
@@ -218,10 +214,8 @@ impl Mamba3Agent {
 
                     // ── 4. INJECT ────────────────────────────────────
                     let injected = if result.success && !result.knowledge_embedding.is_empty() {
-                        injected_embedding = self.inject_knowledge(
-                            &injected_embedding,
-                            &result.knowledge_embedding,
-                        );
+                        injected_embedding =
+                            self.inject_knowledge(&injected_embedding, &result.knowledge_embedding);
                         true
                     } else {
                         false
@@ -310,10 +304,9 @@ impl Mamba3Agent {
             }
         } else {
             // Text-only fast-path: skip ViT, feed query tokens directly to Predictor
-            let output = self.model.infer_text_only(
-                &input.query_tokens,
-                InferenceMode::Embedding,
-            );
+            let output = self
+                .model
+                .infer_text_only(&input.query_tokens, InferenceMode::Embedding);
             match output {
                 InferenceOutput::Embedding(emb) => (emb, true),
                 _ => (vec![0.0f32; embed_dim], false),
@@ -336,12 +329,7 @@ impl Mamba3Agent {
     }
 
     /// Build a tool request from the current state.
-    fn build_tool_request(
-        &self,
-        embedding: &[f32],
-        input: &AgentInput,
-        depth: u8,
-    ) -> ToolRequest {
+    fn build_tool_request(&self, embedding: &[f32], input: &AgentInput, depth: u8) -> ToolRequest {
         let query_text = format!("step:{} tokens:{:?}", self.step_count, &input.query_tokens);
 
         ToolRequest {
@@ -354,11 +342,7 @@ impl Mamba3Agent {
     }
 
     /// Inject knowledge from a tool result into the embedding.
-    fn inject_knowledge(
-        &self,
-        embedding: &[f32],
-        knowledge: &[f32],
-    ) -> Vec<f32> {
+    fn inject_knowledge(&self, embedding: &[f32], knowledge: &[f32]) -> Vec<f32> {
         // Use the tool injector: h_new = h + W_inject · V_knowledge
         // The injector operates on (batch*seq_len, d_model) shaped data.
         // For a single embedding, batch=1, seq_len=1.
@@ -532,11 +516,7 @@ mod tests {
 
         let dim = agent.model.config.shared_embed_dim;
         let mut memory = MemorySearchTool::new(dim);
-        memory.add_entry(
-            vec![1.0; dim],
-            vec![0.5; dim],
-            "knowledge_1".into(),
-        );
+        memory.add_entry(vec![1.0; dim], vec![0.5; dim], "knowledge_1".into());
         agent.register_tool(Box::new(memory));
 
         let input = AgentInput::text(vec![1, 2, 3]);

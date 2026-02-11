@@ -88,7 +88,10 @@ pub fn causal_conv1d_update(
     bias: Option<&[f32]>,
     activation: bool,
 ) -> Vec<f32> {
-    assert!(kernel_size > 0, "causal_conv1d_update: kernel_size must be > 0");
+    assert!(
+        kernel_size > 0,
+        "causal_conv1d_update: kernel_size must be > 0"
+    );
     let mut output = vec![0.0f32; batch * channels];
 
     for b in 0..batch {
@@ -139,7 +142,16 @@ mod tests {
         let weight = vec![0.1f32; channels * kernel_size];
         let bias = vec![0.0f32; channels];
 
-        let out = causal_conv1d_fn(&x, batch, channels, seq_len, &weight, kernel_size, Some(&bias), false);
+        let out = causal_conv1d_fn(
+            &x,
+            batch,
+            channels,
+            seq_len,
+            &weight,
+            kernel_size,
+            Some(&bias),
+            false,
+        );
         assert_eq!(out.len(), batch * channels * seq_len);
     }
 
@@ -155,7 +167,16 @@ mod tests {
         let x = vec![1.0, 0.0, 0.0, 0.0];
         let weight = vec![1.0, 1.0]; // w[0]=recent, w[1]=older
 
-        let out = causal_conv1d_fn(&x, batch, channels, seq_len, &weight, kernel_size, None, false);
+        let out = causal_conv1d_fn(
+            &x,
+            batch,
+            channels,
+            seq_len,
+            &weight,
+            kernel_size,
+            None,
+            false,
+        );
 
         // t=0: w[0]*x[0] + w[1]*0 = 1.0
         assert!((out[0] - 1.0).abs() < 1e-5);
@@ -182,7 +203,14 @@ mod tests {
 
         // Full forward pass
         let full_out = causal_conv1d_fn(
-            &x_seq, batch, channels, seq_len, &weight, kernel_size, Some(&bias), false,
+            &x_seq,
+            batch,
+            channels,
+            seq_len,
+            &weight,
+            kernel_size,
+            Some(&bias),
+            false,
         );
 
         // Step-by-step update
@@ -195,7 +223,14 @@ mod tests {
                 x_step[ch] = x_seq[ch * seq_len + l];
             }
             let out = causal_conv1d_update(
-                &x_step, batch, channels, &mut conv_state, kernel_size, &weight, Some(&bias), false,
+                &x_step,
+                batch,
+                channels,
+                &mut conv_state,
+                kernel_size,
+                &weight,
+                Some(&bias),
+                false,
             );
             step_out.push(out);
         }
@@ -208,7 +243,10 @@ mod tests {
                 assert!(
                     (full_val - step_val).abs() < 1e-4,
                     "Mismatch at ch={}, l={}: full={}, step={}",
-                    ch, l, full_val, step_val,
+                    ch,
+                    l,
+                    full_val,
+                    step_val,
                 );
             }
         }

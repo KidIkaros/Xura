@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::{DType, Device};
 
 #[derive(Error, Debug)]
-pub enum KoreError {
+pub enum XuraError {
     #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
     ShapeMismatch {
         expected: Vec<usize>,

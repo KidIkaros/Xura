@@ -8,7 +8,7 @@ use rand::Rng;
 
 use xura_mamba::MixerModel;
 
-use crate::angn::{AdaptiveNeuralGate, ANGNConfig};
+use crate::angn::{ANGNConfig, AdaptiveNeuralGate};
 use crate::config::{Mamba3PredictorConfig, RecursionConfig};
 use crate::recursion::RecursionLayer;
 
@@ -25,7 +25,9 @@ impl Linear {
         let mut rng = rand::thread_rng();
         let std = (2.0 / (in_dim + out_dim) as f32).sqrt();
         Self {
-            weight: (0..out_dim * in_dim).map(|_| rng.gen_range(-std..std)).collect(),
+            weight: (0..out_dim * in_dim)
+                .map(|_| rng.gen_range(-std..std))
+                .collect(),
             bias: vec![0.0f32; out_dim],
             in_dim,
             out_dim,
@@ -80,14 +82,25 @@ impl Mamba3Predictor {
 
         let pred_head = Linear::new(config.d_model, config.embed_dim);
 
-        Self { config, vision_proj, query_proj, backbone_layers, pred_head, recursion: None, angn: None }
+        Self {
+            config,
+            vision_proj,
+            query_proj,
+            backbone_layers,
+            pred_head,
+            recursion: None,
+            angn: None,
+        }
     }
 
     /// Build a predictor with recursion layer enabled.
     ///
     /// Validates `inject_after_layer` against `n_layers` — if out of bounds,
     /// clamps to the last valid layer index and emits a debug warning.
-    pub fn new_with_recursion(config: Mamba3PredictorConfig, mut rec_config: RecursionConfig) -> Self {
+    pub fn new_with_recursion(
+        config: Mamba3PredictorConfig,
+        mut rec_config: RecursionConfig,
+    ) -> Self {
         let mut predictor = Self::new(config.clone());
         if rec_config.enabled {
             let n_layers = predictor.backbone_layers.layers.len();
@@ -173,8 +186,7 @@ impl Mamba3Predictor {
             // Visual tokens
             let vis_src = b * n_vis * dm;
             let dst = b * seq_len * dm;
-            concat[dst..dst + n_vis * dm]
-                .copy_from_slice(&vis_proj[vis_src..vis_src + n_vis * dm]);
+            concat[dst..dst + n_vis * dm].copy_from_slice(&vis_proj[vis_src..vis_src + n_vis * dm]);
             // Query tokens
             let qry_src = b * n_qry * dm;
             let dst_qry = dst + n_vis * dm;
@@ -344,7 +356,8 @@ mod tests {
         let norm: f32 = output.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!(
             (norm - 1.0).abs() < 1e-4,
-            "output should be L2-normalized, got norm={}", norm
+            "output should be L2-normalized, got norm={}",
+            norm
         );
     }
 

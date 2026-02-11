@@ -74,8 +74,8 @@ impl SelectiveDecoder {
         };
 
         // Exponential smoothing
-        self.smoothed_drift = self.config.smoothing * drift
-            + (1.0 - self.config.smoothing) * self.smoothed_drift;
+        self.smoothed_drift =
+            self.config.smoothing * drift + (1.0 - self.config.smoothing) * self.smoothed_drift;
 
         // Store state
         if self.state_history.len() < ws {

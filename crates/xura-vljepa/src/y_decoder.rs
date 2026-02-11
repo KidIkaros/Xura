@@ -5,7 +5,7 @@
 
 use rand::Rng;
 
-use xura_mamba::{MambaLMHeadModel, InferenceParams};
+use xura_mamba::{InferenceParams, MambaLMHeadModel};
 
 use crate::config::Mamba3DecoderConfig;
 
@@ -22,7 +22,9 @@ impl Linear {
         let mut rng = rand::thread_rng();
         let std = (2.0 / (in_dim + out_dim) as f32).sqrt();
         Self {
-            weight: (0..out_dim * in_dim).map(|_| rng.gen_range(-std..std)).collect(),
+            weight: (0..out_dim * in_dim)
+                .map(|_| rng.gen_range(-std..std))
+                .collect(),
             bias: vec![0.0f32; out_dim],
             in_dim,
             out_dim,
@@ -60,14 +62,15 @@ pub struct Mamba3Decoder {
 
 impl Mamba3Decoder {
     pub fn new(config: Mamba3DecoderConfig) -> Self {
-        let embed_to_prefix = Linear::new(
-            config.embed_dim,
-            config.prefix_len * config.d_model,
-        );
+        let embed_to_prefix = Linear::new(config.embed_dim, config.prefix_len * config.d_model);
         let mamba_config = config.to_mamba_config();
         let lm = MambaLMHeadModel::new(mamba_config);
 
-        Self { config, embed_to_prefix, lm }
+        Self {
+            config,
+            embed_to_prefix,
+            lm,
+        }
     }
 
     /// Generate text from a predicted embedding.
@@ -100,11 +103,10 @@ impl Mamba3Decoder {
         let mut current_token = bos_token;
 
         for _ in 0..max_tokens {
-            let hidden = self.lm.backbone.forward_step(
-                &[current_token],
-                1,
-                &mut inference_params,
-            );
+            let hidden = self
+                .lm
+                .backbone
+                .forward_step(&[current_token], 1, &mut inference_params);
 
             // Project to vocab logits
             let vocab_size = self.lm.backbone.vocab_size;
@@ -172,11 +174,10 @@ impl Mamba3Decoder {
             }
 
             // Feed through backbone to update state
-            let _ = self.lm.backbone.forward_step(
-                &[best_token],
-                1,
-                inference_params,
-            );
+            let _ = self
+                .lm
+                .backbone
+                .forward_step(&[best_token], 1, inference_params);
             inference_params.advance(1);
         }
     }

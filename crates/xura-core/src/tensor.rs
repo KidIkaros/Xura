@@ -2,9 +2,9 @@ use std::fmt;
 
 use smallvec::SmallVec;
 
-use crate::dtype::DType;
 use crate::device::Device;
-use crate::error::KoreError;
+use crate::dtype::DType;
+use crate::error::XuraError;
 use crate::shape::Shape;
 use crate::storage::Storage;
 use crate::Result;
@@ -236,14 +236,15 @@ impl Tensor {
     // =========================================================================
 
     pub fn reshape(&self, new_shape: &[isize]) -> Result<Tensor> {
-        let resolved = self.shape.resolve_reshape(new_shape).ok_or_else(|| {
-            KoreError::InvalidReshape {
-                numel: self.numel(),
-                shape: new_shape.iter().map(|&d| d as usize).collect(),
-            }
-        })?;
+        let resolved =
+            self.shape
+                .resolve_reshape(new_shape)
+                .ok_or_else(|| XuraError::InvalidReshape {
+                    numel: self.numel(),
+                    shape: new_shape.iter().map(|&d| d as usize).collect(),
+                })?;
         if !self.is_contiguous() {
-            return Err(KoreError::StorageError(
+            return Err(XuraError::StorageError(
                 "Cannot reshape non-contiguous tensor (call .contiguous() first)".into(),
             ));
         }
@@ -257,12 +258,13 @@ impl Tensor {
     }
 
     pub fn transpose(&self) -> Result<Tensor> {
-        let new_shape = self.shape.transpose().ok_or_else(|| {
-            KoreError::InvalidAxis {
+        let new_shape = self
+            .shape
+            .transpose()
+            .ok_or_else(|| XuraError::InvalidAxis {
                 axis: 0,
                 ndim: self.ndim(),
-            }
-        })?;
+            })?;
         let ndim = self.ndim();
         let mut new_strides = self.strides.clone();
         new_strides.swap(ndim - 2, ndim - 1);
@@ -291,7 +293,8 @@ impl Tensor {
             let numel = self.numel();
             let mut data = vec![0.0f32; numel];
             for i in 0..numel {
-                data[i] = self.get_f32(i)
+                data[i] = self
+                    .get_f32(i)
                     .expect("contiguous: index out of bounds during copy");
             }
             Tensor::from_f32(&data, self.shape.dims())

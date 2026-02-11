@@ -3,7 +3,6 @@
 //! Implements the `MixerModel` from `mamba_ssm/models/mixer_seq_simple.py`:
 //! Embedding → N × (Norm → Mamba Block + Residual) → Final Norm
 
-
 use crate::cache::InferenceParams;
 use crate::config::MambaConfig;
 use crate::mamba::Mamba;
@@ -79,7 +78,11 @@ pub struct RMSNormFlat {
 
 impl RMSNormFlat {
     pub fn new(d: usize, eps: f32) -> Self {
-        Self { weight: vec![1.0f32; d], eps, d }
+        Self {
+            weight: vec![1.0f32; d],
+            eps,
+            d,
+        }
     }
 
     /// Normalize input of shape (n_rows, d).
@@ -196,7 +199,14 @@ impl MixerModel {
 
         let final_norm = RMSNormFlat::new(d, config.norm_epsilon);
 
-        Self { config, embedding, vocab_size, layers, norms, final_norm }
+        Self {
+            config,
+            embedding,
+            vocab_size,
+            layers,
+            norms,
+            final_norm,
+        }
     }
 
     /// Look up embeddings for token IDs.
@@ -219,13 +229,8 @@ impl MixerModel {
     ///
     /// `token_ids`: shape (batch * seq_len,) flattened
     /// Returns: hidden states, shape (batch, seq_len, d_model)
-    pub fn forward(
-        &self,
-        token_ids: &[usize],
-        batch: usize,
-        seq_len: usize,
-    ) -> Vec<f32> {
-        let d = self.config.d_model;
+    pub fn forward(&self, token_ids: &[usize], batch: usize, seq_len: usize) -> Vec<f32> {
+        let _d = self.config.d_model;
         let n = batch * seq_len;
 
         let mut hidden = self.embed(token_ids, batch, seq_len);
@@ -275,13 +280,11 @@ impl MixerModel {
             let normed = self.norms[i].forward(&hidden, batch);
 
             // Get mutable state
-            let state = inference_params.get_state_mut(i)
+            let state = inference_params
+                .get_state_mut(i)
                 .expect("mixer: inference state not found for layer index");
-            let mixed = layer.forward_step(
-                &normed, batch,
-                &mut state.conv_state,
-                &mut state.ssm_state,
-            );
+            let mixed =
+                layer.forward_step(&normed, batch, &mut state.conv_state, &mut state.ssm_state);
 
             // Residual
             for j in 0..hidden.len() {

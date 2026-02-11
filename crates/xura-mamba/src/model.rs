@@ -19,12 +19,22 @@ pub struct SamplerConfig {
 impl SamplerConfig {
     /// Greedy decoding (argmax).
     pub fn greedy() -> Self {
-        Self { temperature: 1.0, top_k: 1, top_p: 1.0, repetition_penalty: 1.0 }
+        Self {
+            temperature: 1.0,
+            top_k: 1,
+            top_p: 1.0,
+            repetition_penalty: 1.0,
+        }
     }
 
     /// Nucleus sampling with temperature.
     pub fn nucleus(temperature: f32, top_p: f32) -> Self {
-        Self { temperature, top_k: 0, top_p, repetition_penalty: 1.0 }
+        Self {
+            temperature,
+            top_k: 0,
+            top_p,
+            repetition_penalty: 1.0,
+        }
     }
 }
 
@@ -58,22 +68,24 @@ impl MambaLMHeadModel {
             use rand::Rng;
             let mut rng = rand::thread_rng();
             let limit = (6.0 / (d + vocab_size) as f32).sqrt();
-            (0..vocab_size * d).map(|_| rng.gen_range(-limit..limit)).collect()
+            (0..vocab_size * d)
+                .map(|_| rng.gen_range(-limit..limit))
+                .collect()
         };
 
-        Self { config, backbone, lm_head_weight, tie_embeddings: tie }
+        Self {
+            config,
+            backbone,
+            lm_head_weight,
+            tie_embeddings: tie,
+        }
     }
 
     /// Forward pass: token_ids → logits.
     ///
     /// `token_ids`: shape (batch * seq_len,) flattened
     /// Returns: logits as flat f32 vec, shape (batch, seq_len, vocab_size)
-    pub fn forward(
-        &self,
-        token_ids: &[usize],
-        batch: usize,
-        seq_len: usize,
-    ) -> Vec<f32> {
+    pub fn forward(&self, token_ids: &[usize], batch: usize, seq_len: usize) -> Vec<f32> {
         let d = self.config.d_model;
         let v = self.backbone.vocab_size;
 
@@ -110,7 +122,9 @@ impl MambaLMHeadModel {
         let d = self.config.d_model;
         let v = self.backbone.vocab_size;
 
-        let hidden = self.backbone.forward_step(token_ids, batch, inference_params);
+        let hidden = self
+            .backbone
+            .forward_step(token_ids, batch, inference_params);
 
         let mut logits = vec![0.0f32; batch * v];
         for b in 0..batch {
@@ -197,14 +211,17 @@ impl MambaLMHeadModel {
         let v = self.backbone.vocab_size;
         let d = self.config.d_model;
         let embedding = v * d;
-        let layer_params: usize = self.backbone.layers.iter().map(|l| {
-            match l {
+        let layer_params: usize = self
+            .backbone
+            .layers
+            .iter()
+            .map(|l| match l {
                 crate::mixer::MixerLayer::Mamba1(m) => m.param_count(),
                 crate::mixer::MixerLayer::Mamba2(m) => m.param_count(),
                 crate::mixer::MixerLayer::Mamba3(m) => m.param_count(),
                 crate::mixer::MixerLayer::S4(s) => s.param_count(),
-            }
-        }).sum();
+            })
+            .sum();
         let norms = self.config.n_layer * d + d; // per-layer norms + final
         let lm_head = if self.tie_embeddings { 0 } else { v * d };
         embedding + layer_params + norms + lm_head
@@ -248,7 +265,11 @@ fn sample_token(logits: &[f32], _context: &[usize], config: &SamplerConfig) -> u
     let mut indexed: Vec<(usize, f32)> = probs.iter().cloned().enumerate().collect();
     indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-    let k = if config.top_k > 0 { config.top_k.min(v) } else { v };
+    let k = if config.top_k > 0 {
+        config.top_k.min(v)
+    } else {
+        v
+    };
     let top_k_items = &indexed[..k];
 
     // Top-p (nucleus) filtering

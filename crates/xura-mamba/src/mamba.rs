@@ -7,8 +7,8 @@
 
 use rand::Rng;
 
-use xura_core::Tensor;
 use xura_core::Module;
+use xura_core::Tensor;
 
 use crate::causal_conv1d;
 use crate::selective_scan;
@@ -85,7 +85,7 @@ impl Mamba {
         layer_idx: Option<usize>,
     ) -> Self {
         let d_inner = expand * d_model;
-        let dt_rank = dt_rank.unwrap_or_else(|| (d_model + 15) / 16); // ceil(d_model / 16)
+        let dt_rank = dt_rank.unwrap_or_else(|| d_model.div_ceil(16)); // ceil(d_model / 16)
 
         let mut rng = rand::thread_rng();
 
@@ -147,9 +147,7 @@ impl Mamba {
 
         // A_log: S4D real initialization — log(arange(1, d_state+1)) repeated d_inner times
         let a_log: Vec<f32> = (0..d_inner)
-            .flat_map(|_| {
-                (1..=d_state).map(|n| (n as f32).ln())
-            })
+            .flat_map(|_| (1..=d_state).map(|n| (n as f32).ln()))
             .collect();
 
         // D: skip parameter, initialized to ones
@@ -318,7 +316,8 @@ impl Mamba {
             Some(&z_bdl),
             Some(&self.dt_proj_bias),
             true, // delta_softplus
-        ).expect("selective_scan: shape mismatch in Mamba forward");
+        )
+        .expect("selective_scan: shape mismatch in Mamba forward");
 
         // 10) Rearrange scan output from (B, d_inner, L) to (B, L, d_inner)
         //     Then out_proj: (B, L, d_inner) @ out_proj_weight^T -> (B, L, d_model)
@@ -452,7 +451,8 @@ impl Mamba {
             Some(&self.dt_proj_bias),
             true,
             ssm_state,
-        ).expect("selective_state_update: shape mismatch in Mamba step");
+        )
+        .expect("selective_state_update: shape mismatch in Mamba step");
 
         // 9) out_proj: (B, d_inner) @ out_proj_weight^T -> (B, d_model)
         let mut output = vec![0.0f32; batch * d];
@@ -485,15 +485,27 @@ impl Mamba {
     /// Total parameter count.
     pub fn param_count(&self) -> usize {
         let in_proj = 2 * self.d_inner * self.d_model
-            + if self.in_proj_bias.is_some() { 2 * self.d_inner } else { 0 };
+            + if self.in_proj_bias.is_some() {
+                2 * self.d_inner
+            } else {
+                0
+            };
         let conv = self.d_inner * self.d_conv
-            + if self.conv1d_bias.is_some() { self.d_inner } else { 0 };
+            + if self.conv1d_bias.is_some() {
+                self.d_inner
+            } else {
+                0
+            };
         let x_proj = (self.dt_rank + 2 * self.d_state) * self.d_inner;
         let dt_proj = self.d_inner * self.dt_rank + self.d_inner; // weight + bias
         let a_log = self.d_inner * self.d_state;
         let d_skip = self.d_inner;
         let out_proj = self.d_model * self.d_inner
-            + if self.out_proj_bias.is_some() { self.d_model } else { 0 };
+            + if self.out_proj_bias.is_some() {
+                self.d_model
+            } else {
+                0
+            };
         in_proj + conv + x_proj + dt_proj + a_log + d_skip + out_proj
     }
 }
@@ -502,7 +514,7 @@ impl Module for Mamba {
     fn forward(&self, input: &Tensor) -> xura_core::Result<Tensor> {
         let dims = input.shape().dims().to_vec();
         if dims.len() != 3 {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![0, 0, 0],
                 got: dims,
             });
@@ -511,16 +523,16 @@ impl Module for Mamba {
         let seq_len = dims[1];
         let d = dims[2];
         if d != self.d_model {
-            return Err(xura_core::KoreError::ShapeMismatch {
+            return Err(xura_core::XuraError::ShapeMismatch {
                 expected: vec![batch, seq_len, self.d_model],
                 got: dims,
             });
         }
 
         let data = input.contiguous();
-        let x = data.as_f32_slice().ok_or_else(|| {
-            xura_core::KoreError::UnsupportedDType(input.dtype())
-        })?;
+        let x = data
+            .as_f32_slice()
+            .ok_or_else(|| xura_core::XuraError::UnsupportedDType(input.dtype()))?;
 
         let output = self.forward_train(x, batch, seq_len);
         Ok(Tensor::from_f32(&output, &[batch, seq_len, self.d_model]))

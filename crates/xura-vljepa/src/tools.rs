@@ -101,7 +101,10 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { tools: Vec::new(), signatures: Vec::new() }
+        Self {
+            tools: Vec::new(),
+            signatures: Vec::new(),
+        }
     }
 
     /// Register a tool. Computes and caches its signature embedding.
@@ -177,7 +180,9 @@ impl ToolRegistry {
 
         for d in 0..dim {
             // LCG-style deterministic pseudo-random from hash
-            hash = hash.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            hash = hash
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             sig[d] = ((hash >> 33) as f32 / (1u64 << 31) as f32) - 1.0;
         }
 
@@ -216,7 +221,10 @@ pub struct MemorySearchTool {
 impl MemorySearchTool {
     /// Create a new memory search tool.
     pub fn new(knowledge_dim: usize) -> Self {
-        Self { entries: Vec::new(), knowledge_dim }
+        Self {
+            entries: Vec::new(),
+            knowledge_dim,
+        }
     }
 
     /// Add a knowledge entry.
@@ -233,13 +241,17 @@ impl MemorySearchTool {
 }
 
 impl Tool for MemorySearchTool {
-    fn name(&self) -> &str { "memory_search" }
+    fn name(&self) -> &str {
+        "memory_search"
+    }
 
     fn description(&self) -> &str {
         "Search vector knowledge base for relevant information"
     }
 
-    fn knowledge_dim(&self) -> usize { self.knowledge_dim }
+    fn knowledge_dim(&self) -> usize {
+        self.knowledge_dim
+    }
 
     fn execute(&self, request: &ToolRequest) -> ToolResult {
         if self.entries.is_empty() {
@@ -309,9 +321,15 @@ impl EchoTool {
 }
 
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "Echo query back (testing)" }
-    fn knowledge_dim(&self) -> usize { self.knowledge_dim }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "Echo query back (testing)"
+    }
+    fn knowledge_dim(&self) -> usize {
+        self.knowledge_dim
+    }
 
     fn execute(&self, request: &ToolRequest) -> ToolResult {
         let mut embedding = vec![0.0f32; self.knowledge_dim];
@@ -342,7 +360,11 @@ fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
         nb += b[i] * b[i];
     }
     let denom = na.sqrt() * nb.sqrt();
-    if denom < 1e-12 { 0.0 } else { dot / denom }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -427,8 +449,16 @@ mod tests {
     #[test]
     fn test_memory_search_recursive() {
         let mut tool = MemorySearchTool::new(4);
-        tool.add_entry(vec![1.0, 0.0, 0.0, 0.0], vec![0.5, 0.5, 0.0, 0.0], "a".into());
-        tool.add_entry(vec![0.0, 1.0, 0.0, 0.0], vec![0.0, 0.0, 1.0, 1.0], "b".into());
+        tool.add_entry(
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.5, 0.5, 0.0, 0.0],
+            "a".into(),
+        );
+        tool.add_entry(
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            "b".into(),
+        );
 
         let request = ToolRequest {
             tool_name: "memory_search".into(),

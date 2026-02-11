@@ -37,7 +37,7 @@ pub fn c2r(v: &[C32]) -> Vec<f32> {
 
 /// Convert interleaved real pairs back to complex: [re0, im0, re1, im1, ...] → [c0, c1, ...].
 pub fn r2c(v: &[f32]) -> Vec<C32> {
-    assert!(v.len() % 2 == 0, "r2c requires even-length input");
+    assert!(v.len().is_multiple_of(2), "r2c requires even-length input");
     v.chunks_exact(2).map(|pair| c(pair[0], pair[1])).collect()
 }
 
@@ -83,12 +83,7 @@ pub fn log_vandermonde_naive(v: &[C32], x: &[C32], l_len: usize) -> Vec<f32> {
 ///
 /// # Returns
 /// Complex vector of length N.
-pub fn log_vandermonde_transpose_naive(
-    u: &[f32],
-    v: &[C32],
-    x: &[C32],
-    l_len: usize,
-) -> Vec<C32> {
+pub fn log_vandermonde_transpose_naive(u: &[f32], v: &[C32], x: &[C32], l_len: usize) -> Vec<C32> {
     let n = v.len();
     let mut result = vec![C32::new(0.0, 0.0); n];
 
@@ -220,7 +215,13 @@ mod tests {
         let k = log_vandermonde_naive(&v, &x, 5);
         for l in 0..5 {
             let expected = 2.0 * (-0.1 * l as f32).exp();
-            assert!((k[l] - expected).abs() < 1e-4, "l={}: got {}, expected {}", l, k[l], expected);
+            assert!(
+                (k[l] - expected).abs() < 1e-4,
+                "l={}: got {}, expected {}",
+                l,
+                k[l],
+                expected
+            );
         }
     }
 

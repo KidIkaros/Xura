@@ -22,7 +22,6 @@
 //! always leaks. This is critical for long sessions with noisy input
 //! (terminal logs, blank screens, etc.).
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -326,7 +325,7 @@ mod tests {
         let mut angn = AdaptiveNeuralGate::new(config, 2);
 
         let hidden = vec![1.0f32, 2.0, 3.0, 4.0]; // n=1, d_model=4... wait, d_model is 64
-        // Use d_model=64
+                                                  // Use d_model=64
         let hidden = vec![1.0f32; 2 * 64]; // n=2
         let out = angn.gate_layer(&hidden, 0, 2);
         assert_eq!(out, hidden); // Disabled → identity
@@ -349,7 +348,11 @@ mod tests {
 
         // With bias_init = -5.0, gate ≈ σ(-5) ≈ 0.007 → output ≈ 0.07
         let max_val = gated.iter().cloned().fold(0.0f32, f32::max);
-        assert!(max_val < 1.0, "gated output should be heavily attenuated, got {}", max_val);
+        assert!(
+            max_val < 1.0,
+            "gated output should be heavily attenuated, got {}",
+            max_val
+        );
     }
 
     #[test]
@@ -369,7 +372,12 @@ mod tests {
 
         // With bias_init = 10.0, gate ≈ σ(10) ≈ 1.0 → output ≈ input
         for (g, h) in gated.iter().zip(hidden.iter()) {
-            assert!((g - h).abs() < 0.5, "expected near-passthrough, got {} vs {}", g, h);
+            assert!(
+                (g - h).abs() < 0.5,
+                "expected near-passthrough, got {} vs {}",
+                g,
+                h
+            );
         }
     }
 
@@ -414,8 +422,11 @@ mod tests {
         angn.gate_layer(&hidden, 1, 2); // EMA updates on last gate
 
         // With very negative bias, activation should be very low
-        assert!(angn.ema_activation() < 0.1,
-            "expected low activation with bias=-10, got {}", angn.ema_activation());
+        assert!(
+            angn.ema_activation() < 0.1,
+            "expected low activation with bias=-10, got {}",
+            angn.ema_activation()
+        );
         assert_eq!(angn.step_count(), 1);
     }
 
@@ -434,8 +445,10 @@ mod tests {
         let hidden = vec![1.0f32; 1 * 4];
         angn.gate_layer(&hidden, 0, 1);
 
-        assert!(angn.context_reset_detected(),
-            "should detect context reset with closed gates");
+        assert!(
+            angn.context_reset_detected(),
+            "should detect context reset with closed gates"
+        );
     }
 
     #[test]
@@ -453,8 +466,10 @@ mod tests {
         let hidden = vec![1.0f32; 1 * 4];
         angn.gate_layer(&hidden, 0, 1);
 
-        assert!(!angn.context_reset_detected(),
-            "should not false-trigger context reset with open gates");
+        assert!(
+            !angn.context_reset_detected(),
+            "should not false-trigger context reset with open gates"
+        );
     }
 
     #[test]
@@ -520,8 +535,11 @@ mod tests {
         assert_eq!(acts.len(), 3);
         // With zero input and bias=0, gate = σ(w*0 + 0) = σ(0) = 0.5
         for &a in acts {
-            assert!((a - 0.5).abs() < 0.1,
-                "expected activation near 0.5 with zero input and bias=0, got {}", a);
+            assert!(
+                (a - 0.5).abs() < 0.1,
+                "expected activation near 0.5 with zero input and bias=0, got {}",
+                a
+            );
         }
     }
 
@@ -543,8 +561,11 @@ mod tests {
 
         // Even 1000.0 * σ(-20) ≈ 0.000002 → effectively zero
         for &v in &gated {
-            assert!(v.abs() < 0.01,
-                "multiplicative gate should zero out noise, got {}", v);
+            assert!(
+                v.abs() < 0.01,
+                "multiplicative gate should zero out noise, got {}",
+                v
+            );
         }
     }
 }

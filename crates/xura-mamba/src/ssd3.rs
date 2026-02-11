@@ -16,7 +16,13 @@ fn silu(x: f32) -> f32 {
 /// Softplus activation: log(1 + exp(x))
 #[inline]
 fn softplus(x: f32) -> f32 {
-    if x > 20.0 { x } else if x < -20.0 { 0.0 } else { (1.0 + x.exp()).ln() }
+    if x > 20.0 {
+        x
+    } else if x < -20.0 {
+        0.0
+    } else {
+        (1.0 + x.exp()).ln()
+    }
 }
 
 /// Apply data-dependent RoPE rotation to a vector in-place.
@@ -29,7 +35,11 @@ fn softplus(x: f32) -> f32 {
 /// `theta`: rotation angle (derived from imaginary part of A and dt)
 #[inline]
 fn apply_rope_inplace(v: &mut [f32], theta: f32) {
-    assert!(v.len() % 2 == 0, "apply_rope_inplace: vector length must be even, got {}", v.len());
+    assert!(
+        v.len().is_multiple_of(2),
+        "apply_rope_inplace: vector length must be even, got {}",
+        v.len()
+    );
     let cos_t = theta.cos();
     let sin_t = theta.sin();
     let pairs = v.len() / 2;
@@ -104,7 +114,12 @@ pub fn mamba3_scan_combined(
     use_rope: bool,
 ) -> Mamba3ScanOutput {
     assert!(ngroups > 0, "mamba3_scan_combined: ngroups must be > 0");
-    assert!(nheads % ngroups == 0, "mamba3_scan_combined: nheads ({}) must be divisible by ngroups ({})", nheads, ngroups);
+    assert!(
+        nheads.is_multiple_of(ngroups),
+        "mamba3_scan_combined: nheads ({}) must be divisible by ngroups ({})",
+        nheads,
+        ngroups
+    );
     let heads_per_group = nheads / ngroups;
     let mut output = vec![0.0f32; batch * seq_len * nheads * headdim];
     // State: (batch, nheads, d_state, headdim)
@@ -209,17 +224,19 @@ pub fn mamba3_scan_combined(
                         y *= silu(z_val);
                     }
 
-                    let out_idx = b_idx * seq_len * nheads * headdim
-                        + l * nheads * headdim
-                        + h * headdim
-                        + p;
+                    let out_idx =
+                        b_idx * seq_len * nheads * headdim + l * nheads * headdim + h * headdim + p;
                     output[out_idx] = y;
                 }
             }
         }
     }
 
-    Mamba3ScanOutput { output, last_state: state, prev_bx }
+    Mamba3ScanOutput {
+        output,
+        last_state: state,
+        prev_bx,
+    }
 }
 
 /// Single-step Mamba-3 SSM update for decoding.
@@ -267,7 +284,12 @@ pub fn mamba3_ssm_step(
     use_rope: bool,
 ) -> Vec<f32> {
     assert!(ngroups > 0, "mamba3_ssm_step: ngroups must be > 0");
-    assert!(nheads % ngroups == 0, "mamba3_ssm_step: nheads ({}) must be divisible by ngroups ({})", nheads, ngroups);
+    assert!(
+        nheads.is_multiple_of(ngroups),
+        "mamba3_ssm_step: nheads ({}) must be divisible by ngroups ({})",
+        nheads,
+        ngroups
+    );
     let heads_per_group = nheads / ngroups;
     let mut output = vec![0.0f32; batch * nheads * headdim];
 
@@ -392,9 +414,26 @@ mod tests {
         let d_skip = vec![1.0f32; nheads];
 
         let result = mamba3_scan_combined(
-            &x, batch, seq_len, nheads, headdim,
-            &dt, &a_real, &a_imag, &b, ngroups, d_state, &c,
-            None, None, Some(&d_skip), None, None, false, 0.5, true,
+            &x,
+            batch,
+            seq_len,
+            nheads,
+            headdim,
+            &dt,
+            &a_real,
+            &a_imag,
+            &b,
+            ngroups,
+            d_state,
+            &c,
+            None,
+            None,
+            Some(&d_skip),
+            None,
+            None,
+            false,
+            0.5,
+            true,
         );
 
         assert_eq!(result.output.len(), batch * seq_len * nheads * headdim);
@@ -421,9 +460,26 @@ mod tests {
         let d_skip = vec![2.0];
 
         let result = mamba3_scan_combined(
-            &x, batch, seq_len, nheads, headdim,
-            &dt, &a_real, &a_imag, &b, ngroups, d_state, &c,
-            None, None, Some(&d_skip), None, None, false, 0.5, false,
+            &x,
+            batch,
+            seq_len,
+            nheads,
+            headdim,
+            &dt,
+            &a_real,
+            &a_imag,
+            &b,
+            ngroups,
+            d_state,
+            &c,
+            None,
+            None,
+            Some(&d_skip),
+            None,
+            None,
+            false,
+            0.5,
+            false,
         );
 
         assert!((result.output[0] - 2.0).abs() < 1e-5);
@@ -451,8 +507,7 @@ mod tests {
 
         // Trapezoidal alpha=0.5: beta=0.5, gamma=0.5
         let result = mamba3_scan_combined(
-            &x, batch, seq_len, nheads, headdim,
-            &dt, &a_real, &a_imag, &b, ngroups, d_state, &c,
+            &x, batch, seq_len, nheads, headdim, &dt, &a_real, &a_imag, &b, ngroups, d_state, &c,
             None, None, None, None, None, false, 0.5, false,
         );
 
@@ -481,9 +536,26 @@ mod tests {
         let c_bias = vec![0.3]; // C becomes 1.3
 
         let result = mamba3_scan_combined(
-            &x, batch, seq_len, nheads, headdim,
-            &dt, &a_real, &a_imag, &b, ngroups, d_state, &c,
-            Some(&b_bias), Some(&c_bias), None, None, None, false, 0.5, false,
+            &x,
+            batch,
+            seq_len,
+            nheads,
+            headdim,
+            &dt,
+            &a_real,
+            &a_imag,
+            &b,
+            ngroups,
+            d_state,
+            &c,
+            Some(&b_bias),
+            Some(&c_bias),
+            None,
+            None,
+            None,
+            false,
+            0.5,
+            false,
         );
 
         // state = 0 + 0.5 * 1.5 * 1.0 + 0.5 * 0 = 0.75
@@ -510,10 +582,27 @@ mod tests {
         let mut prev_bx_state = vec![0.0f32; batch * nheads * d_state * headdim];
 
         let out = mamba3_ssm_step(
-            &x, batch, nheads, headdim, &dt, &a_real, &a_imag,
-            &b, ngroups, d_state, &c,
-            None, None, Some(&d_skip), None, None, false,
-            &mut ssm_state, &mut prev_bx_state, 0.5, true,
+            &x,
+            batch,
+            nheads,
+            headdim,
+            &dt,
+            &a_real,
+            &a_imag,
+            &b,
+            ngroups,
+            d_state,
+            &c,
+            None,
+            None,
+            Some(&d_skip),
+            None,
+            None,
+            false,
+            &mut ssm_state,
+            &mut prev_bx_state,
+            0.5,
+            true,
         );
 
         assert_eq!(out.len(), batch * nheads * headdim);
@@ -538,21 +627,53 @@ mod tests {
 
         // Step 0: x=1, B=1, C=1
         let out0 = mamba3_ssm_step(
-            &[1.0], batch, nheads, headdim,
-            &[dt_val], &a_real, &a_imag,
-            &[1.0], ngroups, d_state, &[1.0],
-            None, None, None, None, None, false,
-            &mut ssm_state, &mut prev_bx, 0.5, false,
+            &[1.0],
+            batch,
+            nheads,
+            headdim,
+            &[dt_val],
+            &a_real,
+            &a_imag,
+            &[1.0],
+            ngroups,
+            d_state,
+            &[1.0],
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            &mut ssm_state,
+            &mut prev_bx,
+            0.5,
+            false,
         );
         assert!((out0[0] - 0.5).abs() < 1e-5);
 
         // Step 1: x=1, B=1, C=1
         let out1 = mamba3_ssm_step(
-            &[1.0], batch, nheads, headdim,
-            &[dt_val], &a_real, &a_imag,
-            &[1.0], ngroups, d_state, &[1.0],
-            None, None, None, None, None, false,
-            &mut ssm_state, &mut prev_bx, 0.5, false,
+            &[1.0],
+            batch,
+            nheads,
+            headdim,
+            &[dt_val],
+            &a_real,
+            &a_imag,
+            &[1.0],
+            ngroups,
+            d_state,
+            &[1.0],
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            &mut ssm_state,
+            &mut prev_bx,
+            0.5,
+            false,
         );
         assert!((out1[0] - 1.5).abs() < 1e-5);
     }

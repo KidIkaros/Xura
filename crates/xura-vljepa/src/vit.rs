@@ -10,7 +10,7 @@ use crate::config::VitConfig;
 /// GELU activation (approximate).
 #[inline]
 fn gelu(x: f32) -> f32 {
-    0.5 * x * (1.0 + (0.7978845608 * (x + 0.044715 * x * x * x)).tanh())
+    0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044715 * x * x * x)).tanh())
 }
 
 /// Patch embedding: Conv2d(in_channels, d_model, kernel=patch_size, stride=patch_size).
@@ -65,14 +65,9 @@ impl PatchEmbed {
                                 for kx in 0..ps {
                                     let iy = py * ps + ky;
                                     let ix = px * ps + kx;
-                                    let input_idx = b * self.in_channels * h * w
-                                        + c * h * w
-                                        + iy * w
-                                        + ix;
-                                    let weight_idx = d * fan_in
-                                        + c * ps * ps
-                                        + ky * ps
-                                        + kx;
+                                    let input_idx =
+                                        b * self.in_channels * h * w + c * h * w + iy * w + ix;
+                                    let weight_idx = d * fan_in + c * ps * ps + ky * ps + kx;
                                     acc += input[input_idx] * self.weight[weight_idx];
                                 }
                             }
@@ -151,7 +146,15 @@ impl MultiHeadAttention {
             .collect();
         let out_bias = vec![0.0f32; d_model];
 
-        Self { qkv_weight, qkv_bias, out_weight, out_bias, d_model, n_heads, head_dim }
+        Self {
+            qkv_weight,
+            qkv_bias,
+            out_weight,
+            out_bias,
+            d_model,
+            n_heads,
+            head_dim,
+        }
     }
 
     /// Forward: (batch * seq_len, d_model) → (batch * seq_len, d_model)
@@ -258,9 +261,13 @@ impl FeedForward {
         let std1 = (2.0 / (d_model + d_ff) as f32).sqrt();
         let std2 = (2.0 / (d_ff + d_model) as f32).sqrt();
         Self {
-            w1: (0..d_ff * d_model).map(|_| rng.gen_range(-std1..std1)).collect(),
+            w1: (0..d_ff * d_model)
+                .map(|_| rng.gen_range(-std1..std1))
+                .collect(),
             b1: vec![0.0f32; d_ff],
-            w2: (0..d_model * d_ff).map(|_| rng.gen_range(-std2..std2)).collect(),
+            w2: (0..d_model * d_ff)
+                .map(|_| rng.gen_range(-std2..std2))
+                .collect(),
             b2: vec![0.0f32; d_model],
             d_model,
             d_ff,
@@ -402,9 +409,9 @@ impl VisionEncoder {
             // Patch tokens + pos_embed[1..]
             for p in 0..num_patches {
                 for d in 0..dm {
-                    hidden[b * seq_len * dm + (1 + p) * dm + d] =
-                        patches[b * num_patches * dm + p * dm + d]
-                            + self.pos_embed[(1 + p) * dm + d];
+                    hidden[b * seq_len * dm + (1 + p) * dm + d] = patches
+                        [b * num_patches * dm + p * dm + d]
+                        + self.pos_embed[(1 + p) * dm + d];
                 }
             }
         }
@@ -441,16 +448,19 @@ impl VisionEncoder {
     pub fn param_count(&self) -> usize {
         let dm = self.config.d_model;
         let np = self.config.num_patches();
-        let patch = self.config.in_channels * self.config.patch_size * self.config.patch_size * dm + dm;
+        let patch =
+            self.config.in_channels * self.config.patch_size * self.config.patch_size * dm + dm;
         let cls = dm;
         let pos = (1 + np) * dm;
-        let block_params = self.blocks.len() * (
-            2 * (2 * dm) // 2 LayerNorms (weight + bias)
+        let block_params = self.blocks.len()
+            * (
+                2 * (2 * dm) // 2 LayerNorms (weight + bias)
             + 3 * dm * dm + 3 * dm // QKV
             + dm * dm + dm // out proj
             + self.config.d_ff * dm + self.config.d_ff // FFN w1
-            + dm * self.config.d_ff + dm // FFN w2
-        );
+            + dm * self.config.d_ff + dm
+                // FFN w2
+            );
         let final_norm = 2 * dm;
         patch + cls + pos + block_params + final_norm
     }
@@ -480,7 +490,8 @@ mod tests {
         let np = config.num_patches();
         let encoder = VisionEncoder::new(config.clone());
         let batch = 2;
-        let input = vec![0.1f32; batch * config.in_channels * config.image_size * config.image_size];
+        let input =
+            vec![0.1f32; batch * config.in_channels * config.image_size * config.image_size];
         let output = encoder.forward(&input, batch, config.image_size, config.image_size);
         assert_eq!(output.len(), batch * (1 + np) * dm);
     }
@@ -492,7 +503,8 @@ mod tests {
         let np = config.num_patches();
         let encoder = VisionEncoder::new(config.clone());
         let batch = 1;
-        let input = vec![0.1f32; batch * config.in_channels * config.image_size * config.image_size];
+        let input =
+            vec![0.1f32; batch * config.in_channels * config.image_size * config.image_size];
         let patches = encoder.forward_patches(&input, batch, config.image_size, config.image_size);
         assert_eq!(patches.len(), batch * np * dm);
     }

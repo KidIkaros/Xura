@@ -81,7 +81,7 @@ impl Shape {
             .collect();
 
         if let Some(idx) = inferred_idx {
-            if known_product == 0 || numel % known_product != 0 {
+            if known_product == 0 || !numel.is_multiple_of(known_product) {
                 return None;
             }
             result[idx] = numel / known_product;

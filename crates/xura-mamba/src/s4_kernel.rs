@@ -9,7 +9,7 @@
 
 use rand::Rng;
 
-use crate::complex_utils::{c2r, r2c, cauchy_naive, log_vandermonde_naive, fft_nodes, C32};
+use crate::complex_utils::{c2r, cauchy_naive, fft_nodes, log_vandermonde_naive, r2c, C32};
 use crate::dplr;
 
 /// Discretization method.
@@ -23,13 +23,13 @@ pub enum Discretization {
 
 /// S4D kernel — diagonal state matrix variant.
 pub struct SSMKernelDiag {
-    pub h: usize,       // d_model (number of independent SSM copies)
-    pub n: usize,       // d_state (full state size, internal N is half due to conjugate symmetry)
-    pub half_n: usize,  // N/2
+    pub h: usize,      // d_model (number of independent SSM copies)
+    pub n: usize,      // d_state (full state size, internal N is half due to conjugate symmetry)
+    pub half_n: usize, // N/2
     pub channels: usize,
     pub disc: Discretization,
-    pub n_ssm: usize,   // number of trainable (A, B) copies
-    pub repeat: usize,  // H / n_ssm
+    pub n_ssm: usize,  // number of trainable (A, B) copies
+    pub repeat: usize, // H / n_ssm
 
     // Parameters (stored as interleaved real pairs for complex)
     /// inv_dt: shape (H,) — log-space timescale
@@ -66,9 +66,7 @@ impl SSMKernelDiag {
 
         // Initialize dt
         let inv_dt: Vec<f32> = (0..h)
-            .map(|_| {
-                rng.gen::<f32>() * (dt_max.ln() - dt_min.ln()) + dt_min.ln()
-            })
+            .map(|_| rng.gen::<f32>() * (dt_max.ln() - dt_min.ln()) + dt_min.ln())
             .collect();
 
         // Initialize A, B via DPLR
@@ -102,8 +100,18 @@ impl SSMKernelDiag {
             .collect();
 
         Self {
-            h, n, half_n, channels, disc, n_ssm, repeat,
-            inv_dt, a_real, a_imag, b: b_flat, c: c_flat,
+            h,
+            n,
+            half_n,
+            channels,
+            disc,
+            n_ssm,
+            repeat,
+            inv_dt,
+            a_real,
+            a_imag,
+            b: b_flat,
+            c: c_flat,
         }
     }
 
@@ -187,8 +195,9 @@ impl SSMKernelDiag {
                             let c_bar = ci * (C32::new(1.0, 0.0) - dta / 2.0).inv() * dt[hi];
                             v[ni] = bi * c_bar;
                             // x = log((1 + dtA/2) / (1 - dtA/2))
-                            x[ni] = ((C32::new(1.0, 0.0) + dta / 2.0) /
-                                     (C32::new(1.0, 0.0) - dta / 2.0)).ln();
+                            x[ni] = ((C32::new(1.0, 0.0) + dta / 2.0)
+                                / (C32::new(1.0, 0.0) - dta / 2.0))
+                                .ln();
                         }
                     }
                 }
@@ -229,9 +238,10 @@ impl SSMKernelDiag {
                     }
                     Discretization::Bilinear => {
                         let half_dta = dta / 2.0;
-                        da[hi * self.half_n + ni] = (C32::new(1.0, 0.0) + half_dta)
-                            / (C32::new(1.0, 0.0) - half_dta);
-                        db[hi * self.half_n + ni] = bi * (C32::new(1.0, 0.0) - half_dta).inv() * dt[hi];
+                        da[hi * self.half_n + ni] =
+                            (C32::new(1.0, 0.0) + half_dta) / (C32::new(1.0, 0.0) - half_dta);
+                        db[hi * self.half_n + ni] =
+                            bi * (C32::new(1.0, 0.0) - half_dta).inv() * dt[hi];
                     }
                 }
             }
@@ -334,7 +344,9 @@ impl SSMKernelDPLR {
         disc: Discretization,
         n_ssm: Option<usize>,
     ) -> Self {
-        let diag = SSMKernelDiag::new(d_model, d_state, channels, init, dt_min, dt_max, disc, n_ssm);
+        let diag = SSMKernelDiag::new(
+            d_model, d_state, channels, init, dt_min, dt_max, disc, n_ssm,
+        );
 
         let actual_n_ssm = n_ssm.unwrap_or(d_model);
 
@@ -387,9 +399,7 @@ impl SSMKernelDPLR {
         for c_idx in 0..d.channels {
             for hi in 0..d.h {
                 // Incorporate dt into A
-                let a_slice: Vec<C32> = (0..d.half_n)
-                    .map(|ni| dt_a[hi * d.half_n + ni])
-                    .collect();
+                let a_slice: Vec<C32> = (0..d.half_n).map(|ni| dt_a[hi * d.half_n + ni]).collect();
 
                 // Stack B and P, C and Q
                 let b_slice: Vec<C32> = (0..d.half_n)
@@ -400,7 +410,9 @@ impl SSMKernelDPLR {
                     .collect();
 
                 // v = B * C (element-wise), shape (N/2,)
-                let v: Vec<C32> = b_slice.iter().zip(c_slice.iter())
+                let v: Vec<C32> = b_slice
+                    .iter()
+                    .zip(c_slice.iter())
                     .map(|(&bi, &ci)| bi * ci)
                     .collect();
 
@@ -486,7 +498,8 @@ mod tests {
 
     #[test]
     fn test_ssm_kernel_diag_create() {
-        let kernel = SSMKernelDiag::new(8, 16, 1, "diag-inv", 0.001, 0.1, Discretization::Zoh, None);
+        let kernel =
+            SSMKernelDiag::new(8, 16, 1, "diag-inv", 0.001, 0.1, Discretization::Zoh, None);
         assert_eq!(kernel.h, 8);
         assert_eq!(kernel.half_n, 8);
         assert_eq!(kernel.channels, 1);
@@ -518,7 +531,17 @@ mod tests {
 
     #[test]
     fn test_ssm_kernel_dplr_forward_shape() {
-        let kernel = SSMKernelDPLR::new(4, 8, 1, "diag-inv", 1, 0.001, 0.1, Discretization::Zoh, None);
+        let kernel = SSMKernelDPLR::new(
+            4,
+            8,
+            1,
+            "diag-inv",
+            1,
+            0.001,
+            0.1,
+            Discretization::Zoh,
+            None,
+        );
         let k = kernel.forward(16);
         assert_eq!(k.len(), 1 * 4 * 16);
     }
