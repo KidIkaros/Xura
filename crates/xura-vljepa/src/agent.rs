@@ -28,6 +28,7 @@
 use half::f16;
 
 use crate::config::{AgentConfig, Mamba3JepaConfig};
+use crate::memory::{VisualMemory, f32_image_to_rgb_bytes};
 use crate::recursion::StateInjector;
 use crate::selective_decode::SelectiveDecoder;
 use crate::tools::{Tool, ToolRegistry, ToolRequest, ToolResult};
@@ -202,10 +203,8 @@ pub struct Mamba3Agent {
     tool_injector: StateInjector,
     /// Selective decoder for streaming output.
     selective_decoder: SelectiveDecoder,
-    /// Episodic memory: recent (embedding, response) pairs.
-    episodic_memory: Vec<EpisodicEntry>,
-    /// Maximum episodic memory entries.
-    max_episodic_entries: usize,
+    /// Disk-backed dual-stream memory (None = disabled, e.g. in tests).
+    memory: Option<VisualMemory>,
     /// Current step counter.
     step_count: usize,
     /// Last embedding produced (stored as f16 to halve memory).
@@ -220,17 +219,6 @@ pub struct Mamba3Agent {
     feedback_dim: usize,
 }
 
-/// An entry in the agent's episodic memory.
-///
-/// Embeddings stored as f16 to halve memory — only cast to f32 for compute.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct EpisodicEntry {
-    embedding: Vec<f16>,
-    response_tokens: Vec<usize>,
-    step: usize,
-}
-
 impl Mamba3Agent {
     /// Build a new agent from model and agent configs.
     pub fn new(model_config: Mamba3JepaConfig, agent_config: AgentConfig) -> Self {
@@ -242,14 +230,20 @@ impl Mamba3Agent {
         let tool_injector = StateInjector::new(model_config.shared_embed_dim, knowledge_dim);
         let model = Mamba3Jepa::new(model_config);
 
+        // Open disk-backed memory if enabled in config
+        let memory = if agent_config.memory.enabled {
+            VisualMemory::open_index_only(agent_config.memory.clone()).ok()
+        } else {
+            None
+        };
+
         Self {
             model,
             agent_config,
             tools: ToolRegistry::new(),
             tool_injector,
             selective_decoder,
-            episodic_memory: Vec::new(),
-            max_episodic_entries: 1024,
+            memory,
             step_count: 0,
             last_embedding: None,
             visual_gate: VisualGate::new(),
@@ -343,8 +337,8 @@ impl Mamba3Agent {
         let (response_tokens, did_decode) = self.act(&injected_embedding, state_drift);
 
         // ── 6. REMEMBER ──────────────────────────────────────────────
-        // Store in episodic memory.
-        self.remember(&injected_embedding, &response_tokens, step_num);
+        // Store in disk-backed memory (if enabled).
+        self.remember(input, &injected_embedding, &response_tokens, step_num);
         self.last_embedding = Some(injected_embedding.iter().map(|&v| f16::from_f32(v)).collect());
 
         AgentOutput {
@@ -358,11 +352,14 @@ impl Mamba3Agent {
         }
     }
 
-    /// Reset the agent's state (clear Mamba state, episodic memory, etc.).
+    /// Reset the agent's state (clear Mamba state, flush memory, etc.).
     pub fn reset(&mut self) {
         self.step_count = 0;
         self.last_embedding = None;
-        self.episodic_memory.clear();
+        // Flush disk memory before resetting
+        if let Some(ref mut mem) = self.memory {
+            let _ = mem.flush();
+        }
         self.selective_decoder.reset();
         self.visual_gate.reset();
         self.last_tool_knowledge = None;
@@ -376,9 +373,11 @@ impl Mamba3Agent {
         self.step_count
     }
 
-    /// Get the episodic memory entries.
-    pub fn episodic_memory_len(&self) -> usize {
-        self.episodic_memory.len()
+    /// Get the number of entries written to disk-backed memory.
+    ///
+    /// Returns 0 if memory is disabled.
+    pub fn memory_entry_count(&self) -> u64 {
+        self.memory.as_ref().map_or(0, |m| m.index_count())
     }
 
     // ─── Internal methods ────────────────────────────────────────────
@@ -510,19 +509,38 @@ impl Mamba3Agent {
         out
     }
 
-    /// Store interaction in episodic memory.
-    fn remember(&mut self, embedding: &[f32], response_tokens: &[usize], step: usize) {
-        let entry = EpisodicEntry {
-            embedding: embedding.iter().map(|&v| f16::from_f32(v)).collect(),
-            response_tokens: response_tokens.to_vec(),
-            step,
+    /// Store interaction in disk-backed memory.
+    ///
+    /// Writes the embedding, response tokens, and (optionally) a video frame
+    /// to the dual-stream memory system. No-op if memory is disabled.
+    fn remember(
+        &mut self,
+        input: &AgentInput,
+        embedding: &[f32],
+        response_tokens: &[usize],
+        step: usize,
+    ) {
+        let mem = match self.memory.as_mut() {
+            Some(m) => m,
+            None => return,
         };
-        self.episodic_memory.push(entry);
 
-        // Evict oldest if over capacity
-        if self.episodic_memory.len() > self.max_episodic_entries {
-            self.episodic_memory.remove(0);
-        }
+        // Convert f32 image to RGB bytes for ffmpeg (if video stream is active)
+        let rgb_bytes = if mem.has_video() {
+            input.image.as_ref().map(|img| {
+                let c = self.model.config.vit.in_channels;
+                f32_image_to_rgb_bytes(img, c, input.image_h, input.image_w)
+            })
+        } else {
+            None
+        };
+
+        let _ = mem.append(
+            rgb_bytes.as_deref(),
+            embedding,
+            response_tokens,
+            step,
+        );
     }
 }
 
@@ -561,7 +579,7 @@ mod tests {
     fn test_agent_creation() {
         let agent = make_agent();
         assert_eq!(agent.step_count(), 0);
-        assert_eq!(agent.episodic_memory_len(), 0);
+        assert_eq!(agent.memory_entry_count(), 0);
     }
 
     #[test]
@@ -575,7 +593,6 @@ mod tests {
         assert!(output.did_decode);
         assert!(output.tool_calls.is_empty());
         assert_eq!(agent.step_count(), 1);
-        assert_eq!(agent.episodic_memory_len(), 1);
     }
 
     #[test]
@@ -605,7 +622,6 @@ mod tests {
         }
 
         assert_eq!(agent.step_count(), 5);
-        assert_eq!(agent.episodic_memory_len(), 5);
     }
 
     #[test]
@@ -694,11 +710,9 @@ mod tests {
         agent.step(&AgentInput::text(vec![1, 2]));
         agent.step(&AgentInput::text(vec![3, 4]));
         assert_eq!(agent.step_count(), 2);
-        assert_eq!(agent.episodic_memory_len(), 2);
 
         agent.reset();
         assert_eq!(agent.step_count(), 0);
-        assert_eq!(agent.episodic_memory_len(), 0);
     }
 
     // ─── Regression tests for architectural fixes ─────────────────
@@ -777,20 +791,6 @@ mod tests {
         agent.step(&AgentInput::text(vec![1, 2]));
         assert_eq!(agent.visual_gate.hits, 0);
         assert_eq!(agent.visual_gate.misses, 0);
-    }
-
-    /// Precision Bloat fix: episodic memory uses f16 storage.
-    #[test]
-    fn test_f16_episodic_memory() {
-        let mut agent = make_agent();
-        agent.step(&AgentInput::text(vec![1, 2, 3]));
-        assert_eq!(agent.episodic_memory_len(), 1);
-
-        // Verify the stored embedding is f16 by checking it round-trips
-        let entry = &agent.episodic_memory[0];
-        let restored: Vec<f32> = entry.embedding.iter().map(|v| v.to_f32()).collect();
-        assert!(!restored.is_empty());
-        assert!(restored.iter().all(|v| v.is_finite()));
     }
 
     /// Precision Bloat fix: last_embedding stored as f16.

@@ -33,6 +33,7 @@ pub mod agent;
 pub mod angn;
 pub mod config;
 pub mod loader;
+pub mod memory;
 pub mod loss;
 pub mod predictor;
 pub mod recursion;
@@ -48,9 +49,10 @@ pub use angn::{ANGNConfig, AdaptiveNeuralGate};
 pub use config::AgentConfig;
 pub use config::{
     Mamba3DecoderConfig, Mamba3JepaConfig, Mamba3PredictorConfig, Mamba3TextEncoderConfig,
-    RecursionConfig, VitConfig,
+    RecursionConfig, VisualMemoryConfig, VitConfig,
 };
 pub use loader::{load_safetensors, load_vit_weights, LoadError};
+pub use memory::{VisualMemory, IndexEntry, read_index, f32_image_to_rgb_bytes};
 pub use loss::info_nce_loss;
 pub use predictor::Mamba3Predictor;
 pub use recursion::{ConfusionMonitor, LocalMemoryTool, MemoryTool, RecursionLayer, StateInjector};
