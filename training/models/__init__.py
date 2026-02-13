@@ -8,6 +8,7 @@ from .mamba3 import Mamba3Layer, Mamba3Backbone, RMSNorm
 from .predictor import Mamba3Predictor
 from .angn import AdaptiveNeuralGate, ANGNConfig
 from .y_encoder import Mamba3TextEncoder
+from .y_encoder_pretrained import PretrainedTextEncoder
 from .y_decoder import Mamba3Decoder
 from .vit import VisionEncoder
 from .vljepa import Mamba3Jepa
@@ -20,6 +21,7 @@ __all__ = [
     "AdaptiveNeuralGate",
     "ANGNConfig",
     "Mamba3TextEncoder",
+    "PretrainedTextEncoder",
     "Mamba3Decoder",
     "VisionEncoder",
     "Mamba3Jepa",

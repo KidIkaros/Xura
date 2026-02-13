@@ -4,21 +4,27 @@ Trains the Mamba-3 predictor to match Y-Encoder target embeddings via
 InfoNCE contrastive loss. The X-Encoder (ViT) is frozen.
 
 Usage:
-    # Single GPU
+    # Single GPU (with pretrained Y-Encoder — RECOMMENDED)
     python scripts/train_jepa.py \
-        --vit-checkpoint /path/to/vjepa2_vitl.pth \
+        --pretrained-y-encoder \
         --data-dir /path/to/image_text_pairs \
         --output-dir checkpoints/phase1 \
         --epochs 50 --batch-size 64 --lr 3e-4
 
-    # Multi-GPU (via accelerate)
-    accelerate launch scripts/train_jepa.py \
+    # Single GPU (with Mamba Y-Encoder — legacy, random init)
+    python scripts/train_jepa.py \
         --vit-checkpoint /path/to/vjepa2_vitl.pth \
         --data-dir /path/to/image_text_pairs \
         --output-dir checkpoints/phase1
 
-What trains:   Predictor backbone + ANGN gates + Y-Encoder
-What's frozen: X-Encoder (V-JEPA 2 ViT-L)
+    # Multi-GPU (via accelerate)
+    accelerate launch scripts/train_jepa.py \
+        --pretrained-y-encoder \
+        --data-dir /path/to/image_text_pairs \
+        --output-dir checkpoints/phase1
+
+What trains:   Predictor backbone (Mamba-3) + ANGN gates + Y-Encoder
+What's frozen: X-Encoder (V-JEPA 2 ViT-L / DINOv2)
 What's off:    Y-Decoder, RecursionLayer
 Loss:          InfoNCE (symmetric contrastive)
 """
@@ -42,6 +48,7 @@ from models.vit import VisionEncoder, VitConfig
 from models.predictor import Mamba3Predictor
 from models.angn import ANGNConfig
 from models.y_encoder import Mamba3TextEncoder
+from models.y_encoder_pretrained import PretrainedTextEncoder
 from models.y_decoder import Mamba3Decoder
 from utils.export_weights import export_to_safetensors
 
@@ -51,18 +58,43 @@ from utils.export_weights import export_to_safetensors
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ImageTextDataset(Dataset):
-    """Placeholder dataset for image-text pairs.
+    """Dataset for image-text pairs with proper tokenization.
 
-    Replace with your actual dataset (CC3M, LAION, custom, etc.).
-    Expected format: directory with pairs of files:
-      {id}.jpg + {id}.txt  OR  a JSONL manifest.
+    Supports:
+      - Directory with {id}.jpg + {id}.txt file pairs
+      - JSONL manifest with {"image": path, "text": path_or_string}
+      - Synthetic data fallback for testing
     """
 
-    def __init__(self, data_dir: str, image_size: int = 224, max_seq_len: int = 512, vocab_size: int = 32000):
+    def __init__(
+        self,
+        data_dir: str,
+        image_size: int = 224,
+        max_seq_len: int = 512,
+        tokenizer_name: str = "bert-base-uncased",
+    ):
         self.data_dir = Path(data_dir)
         self.image_size = image_size
         self.max_seq_len = max_seq_len
-        self.vocab_size = vocab_size
+
+        # Load HuggingFace tokenizer (no auth required for bert-base-uncased)
+        from transformers import AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.vocab_size = self.tokenizer.vocab_size
+        print(f"[Dataset] Tokenizer: {tokenizer_name} (vocab_size={self.vocab_size})")
+
+        # Image transforms
+        from torchvision import transforms
+        self.transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ])
 
         # Discover samples
         self.samples = []
@@ -71,7 +103,6 @@ class ImageTextDataset(Dataset):
                 for line in f:
                     self.samples.append(json.loads(line))
         else:
-            # Fall back to finding image files
             for ext in ["*.jpg", "*.png", "*.jpeg"]:
                 for img_path in self.data_dir.glob(ext):
                     txt_path = img_path.with_suffix(".txt")
@@ -100,44 +131,72 @@ class ImageTextDataset(Dataset):
         # Load image
         try:
             from PIL import Image
-            from torchvision import transforms
-
-            transform = transforms.Compose([
-                transforms.Resize((self.image_size, self.image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225]),
-            ])
             img = Image.open(sample["image"]).convert("RGB")
-            image_tensor = transform(img)
+            image_tensor = self.transform(img)
         except Exception as e:
             import warnings
             warnings.warn(f"Failed to load image {sample.get('image', '?')}: {e}", stacklevel=2)
             image_tensor = torch.randn(3, self.image_size, self.image_size)
 
-        # Load text tokens (placeholder — replace with actual tokenizer)
+        # Load text and tokenize with HuggingFace tokenizer
         try:
-            with open(sample["text"]) as f:
-                text = f.read().strip()
-            # Simple character-level tokenization (replace with real tokenizer)
-            tokens = [ord(c) % self.vocab_size for c in text[:self.max_seq_len]]
-            tokens = tokens + [0] * (self.max_seq_len - len(tokens))
-            token_tensor = torch.tensor(tokens, dtype=torch.long)
+            text_source = sample["text"]
+            if text_source.endswith(".txt") and Path(text_source).exists():
+                with open(text_source) as f:
+                    raw_text = f.read().strip()
+            else:
+                raw_text = text_source  # text is inline in manifest
+
+            encoded = self.tokenizer(
+                raw_text,
+                max_length=self.max_seq_len,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt",
+            )
+            token_tensor = encoded["input_ids"].squeeze(0)
+            attention_mask = encoded["attention_mask"].squeeze(0)
         except Exception as e:
             import warnings
             warnings.warn(f"Failed to load text {sample.get('text', '?')}: {e}", stacklevel=2)
-            token_tensor = torch.randint(0, self.vocab_size, (self.max_seq_len,))
+            raw_text = "[error loading text]"
+            token_tensor = torch.zeros(self.max_seq_len, dtype=torch.long)
+            attention_mask = torch.zeros(self.max_seq_len, dtype=torch.long)
 
         return {
             "image": image_tensor,
             "tokens": token_tensor,
+            "attention_mask": attention_mask,
+            "raw_text": raw_text,
         }
 
     def _synthetic_sample(self) -> dict:
         """Generate a synthetic sample for testing the training loop."""
+        # Generate a random but plausible caption
+        captions = [
+            "A cat sitting on a windowsill in the sunlight",
+            "A dog playing fetch in the park on a sunny day",
+            "A beautiful sunset over the ocean with orange clouds",
+            "A city skyline at night with lights reflecting on water",
+            "A plate of fresh pasta with basil and tomato sauce",
+            "A mountain landscape covered in snow during winter",
+            "Children playing in a playground on a summer afternoon",
+            "A stack of old books on a wooden library shelf",
+        ]
+        import random
+        raw_text = random.choice(captions)
+        encoded = self.tokenizer(
+            raw_text,
+            max_length=self.max_seq_len,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )
         return {
             "image": torch.randn(3, self.image_size, self.image_size),
-            "tokens": torch.randint(0, self.vocab_size, (self.max_seq_len,)),
+            "tokens": encoded["input_ids"].squeeze(0),
+            "attention_mask": encoded["attention_mask"].squeeze(0),
+            "raw_text": raw_text,
         }
 
 
@@ -155,11 +214,16 @@ def train_one_epoch(
     temperature: float = 0.07,
     angn_reg_weight: float = 0.01,
     log_interval: int = 50,
+    use_pretrained_y_encoder: bool = False,
+    scaler: torch.amp.GradScaler | None = None,
 ) -> dict:
     """Train one epoch of Phase 1 JEPA pretraining."""
     model.train()
     # Keep X-encoder frozen
     model.x_encoder.eval()
+    # Keep pretrained Y-encoder backbone frozen
+    if use_pretrained_y_encoder and hasattr(model.y_encoder, 'backbone'):
+        model.y_encoder.backbone.eval()
 
     total_loss = 0.0
     total_acc = 0.0
@@ -171,43 +235,52 @@ def train_one_epoch(
         images = batch["image"].to(device)
         tokens = batch["tokens"].to(device)
 
-        # Query embeddings: use Y-encoder's embedding layer as query source
-        # In practice, you'd have a separate query embedding — here we reuse
-        # the token embeddings projected through query_proj
+        # Get query embeddings via the model's unified interface
         with torch.no_grad():
-            query_embeds = model.y_encoder.embedding(tokens)  # (B, L, d_model_enc)
-            # Truncate/pad to match predictor's query_embed_dim
-            qry_dim = model.predictor.query_proj.in_features
-            if query_embeds.shape[-1] != qry_dim:
-                # Project via simple truncation or zero-padding
-                if query_embeds.shape[-1] > qry_dim:
-                    query_embeds = query_embeds[..., :qry_dim]
-                else:
-                    pad = torch.zeros(*query_embeds.shape[:-1], qry_dim - query_embeds.shape[-1],
-                                      device=device)
-                    query_embeds = torch.cat([query_embeds, pad], dim=-1)
+            query_embeds = model.get_query_embeds(tokens)
 
-        # Forward JEPA
-        outputs = model.forward_jepa(
-            images=images,
-            query_tokens=query_embeds,
-            target_tokens=tokens,
-            temperature=temperature,
-        )
+        # Get target embeddings
+        if use_pretrained_y_encoder:
+            # Pretrained Y-Encoder: encode raw text strings
+            raw_texts = batch["raw_text"]  # list of strings
+            target_embeds = model.y_encoder(raw_texts)  # (B, embed_dim)
+            target_tokens = None
+        else:
+            # Mamba Y-Encoder: encode token IDs
+            target_embeds = None
+            target_tokens = tokens
 
-        loss = outputs["loss"]
+        # Forward JEPA (Mamba-3 predictor backbone untouched)
+        use_amp = scaler is not None
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            outputs = model.forward_jepa(
+                images=images,
+                query_tokens=query_embeds,
+                target_tokens=target_tokens,
+                target_embeds=target_embeds,
+                temperature=temperature,
+            )
 
-        # ANGN regularization (encourage sparse gating)
-        angn_loss = torch.tensor(0.0, device=device)
-        if model.predictor.angn is not None and angn_reg_weight > 0:
-            angn_loss = model.predictor.angn.gate_regularization_loss()
-            loss = loss + angn_reg_weight * angn_loss
+            loss = outputs["loss"]
 
-        # Backward
+            # ANGN regularization (encourage sparse gating)
+            angn_loss = torch.tensor(0.0, device=device)
+            if model.predictor.angn is not None and angn_reg_weight > 0:
+                angn_loss = model.predictor.angn.gate_regularization_loss()
+                loss = loss + angn_reg_weight * angn_loss
+
+        # Backward with optional mixed precision
         optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         if scheduler is not None:
             scheduler.step()
@@ -242,6 +315,7 @@ def validate(
     dataloader: DataLoader,
     device: torch.device,
     temperature: float = 0.07,
+    use_pretrained_y_encoder: bool = False,
 ) -> dict:
     """Validate Phase 1 JEPA."""
     model.eval()
@@ -253,17 +327,20 @@ def validate(
         images = batch["image"].to(device)
         tokens = batch["tokens"].to(device)
 
-        query_embeds = model.y_encoder.embedding(tokens)
-        qry_dim = model.predictor.query_proj.in_features
-        if query_embeds.shape[-1] != qry_dim:
-            if query_embeds.shape[-1] > qry_dim:
-                query_embeds = query_embeds[..., :qry_dim]
-            else:
-                pad = torch.zeros(*query_embeds.shape[:-1], qry_dim - query_embeds.shape[-1],
-                                  device=device)
-                query_embeds = torch.cat([query_embeds, pad], dim=-1)
+        query_embeds = model.get_query_embeds(tokens)
 
-        outputs = model.forward_jepa(images, query_embeds, tokens, temperature)
+        if use_pretrained_y_encoder:
+            raw_texts = batch["raw_text"]
+            target_embeds = model.y_encoder(raw_texts)
+            target_tokens = None
+        else:
+            target_embeds = None
+            target_tokens = tokens
+
+        outputs = model.forward_jepa(
+            images, query_embeds, target_tokens=target_tokens,
+            target_embeds=target_embeds, temperature=temperature,
+        )
         total_loss += outputs["loss"].item()
         total_acc += outputs["accuracy"].item()
         n_batches += 1
@@ -305,6 +382,18 @@ def main():
     parser.add_argument("--wandb", action="store_true",
                         help="Enable W&B logging")
     parser.add_argument("--wandb-project", type=str, default="mamba3-jepa")
+    # --- NEW: pretrained Y-Encoder flags ---
+    parser.add_argument("--pretrained-y-encoder", action="store_true",
+                        help="Use pretrained sentence embedding model as Y-Encoder (recommended)")
+    parser.add_argument("--y-encoder-model", type=str,
+                        default=PretrainedTextEncoder.DEFAULT_MODEL,
+                        help="HuggingFace model name for pretrained Y-Encoder")
+    parser.add_argument("--y-encoder-lr-multiplier", type=float, default=0.05,
+                        help="LR multiplier for Y-Encoder params (paper: 0.05)")
+    parser.add_argument("--tokenizer", type=str, default="bert-base-uncased",
+                        help="HuggingFace tokenizer name (no auth required for bert-base-uncased)")
+    parser.add_argument("--fp16", action="store_true",
+                        help="Enable FP16 mixed precision training (recommended for T4 GPUs)")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -322,18 +411,59 @@ def main():
         wandb.init(project=args.wandb_project, config=vars(args))
 
     # ─── Build model ───
+    use_pretrained = args.pretrained_y_encoder
+
     if args.tiny:
         print("[Phase 1] Using TINY config for testing")
         torch.backends.cudnn.benchmark = False
         model = Mamba3Jepa.tiny()
         image_size = 16
         vocab_size = 256
+        use_pretrained = False  # tiny always uses Mamba Y-Encoder
+    elif use_pretrained:
+        print(f"[Phase 1] Using PRETRAINED Y-Encoder: {args.y_encoder_model}")
+        angn_config = ANGNConfig.small() if args.angn_enabled else ANGNConfig()
+        if args.vit_checkpoint:
+            x_encoder = VisionEncoder.from_vjepa2_checkpoint(args.vit_checkpoint)
+        else:
+            print("[Phase 1] No ViT checkpoint — using random ViT weights")
+            x_encoder = VisionEncoder(VitConfig.vjepa2_vit_l())
+            x_encoder.eval()
+            for p in x_encoder.parameters():
+                p.requires_grad = False
+
+        # Pretrained Y-Encoder
+        y_encoder = PretrainedTextEncoder(
+            model_name=args.y_encoder_model,
+            embed_dim=1536,
+        )
+
+        # Get vocab size from dataset tokenizer
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(args.tokenizer)
+        vocab_size = tok.vocab_size
+
+        model = Mamba3Jepa(
+            x_encoder=x_encoder,
+            predictor=Mamba3Predictor(
+                d_model=1024, n_layers=12, d_state=128,
+                expand=2, headdim=64, embed_dim=1536,
+                vision_dim=1024, query_embed_dim=1024,
+                angn_config=angn_config,
+            ),
+            y_encoder=y_encoder,
+            y_decoder=Mamba3Decoder.small(),
+            shared_embed_dim=1536,
+            query_vocab_size=vocab_size,
+            query_embed_dim=768,
+        )
+        image_size = 224
     else:
         angn_config = ANGNConfig.small() if args.angn_enabled else ANGNConfig()
         if args.vit_checkpoint:
             x_encoder = VisionEncoder.from_vjepa2_checkpoint(args.vit_checkpoint)
         else:
-            print("[Phase 1] No ViT checkpoint provided — using random ViT weights")
+            print("[Phase 1] No ViT checkpoint — using random ViT weights")
             x_encoder = VisionEncoder(VitConfig.vjepa2_vit_l())
             x_encoder.eval()
             for p in x_encoder.parameters():
@@ -366,7 +496,7 @@ def main():
         args.data_dir,
         image_size=image_size,
         max_seq_len=args.max_seq_len,
-        vocab_size=vocab_size,
+        tokenizer_name=args.tokenizer if not args.tiny else "bert-base-uncased",
     )
     dataloader = DataLoader(
         dataset,
@@ -378,11 +508,21 @@ def main():
     )
 
     # ─── Optimizer ───
-    # Only optimize trainable parameters (excludes frozen ViT)
+    # Separate param groups with Y-Encoder LR multiplier (per VL-JEPA paper §3.1)
     param_groups = [
-        {"params": [p for p in model.predictor.parameters() if p.requires_grad], "lr": args.lr},
-        {"params": [p for p in model.y_encoder.parameters() if p.requires_grad], "lr": args.lr},
+        {"params": [p for p in model.predictor.parameters() if p.requires_grad],
+         "lr": args.lr},
+        {"params": [p for p in model.y_encoder.parameters() if p.requires_grad],
+         "lr": args.lr * args.y_encoder_lr_multiplier},
     ]
+    # Query embedding + adapt (only exist in pretrained mode)
+    if model.query_embedding is not None:
+        param_groups.append({
+            "params": list(model.query_embedding.parameters()) +
+                     (list(model.query_adapt.parameters())
+                      if not isinstance(model.query_adapt, nn.Identity) else []),
+            "lr": args.lr,
+        })
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     total_steps = len(dataloader) * args.epochs
@@ -392,6 +532,11 @@ def main():
         total_steps=total_steps,
         pct_start=min(args.warmup_steps / max(total_steps, 1), 0.3),
     )
+
+    # Mixed precision scaler (for T4 GPUs)
+    scaler = torch.amp.GradScaler('cuda') if args.fp16 and device.type == "cuda" else None
+    if scaler:
+        print("[Phase 1] FP16 mixed precision enabled")
 
     # ─── Training ───
     output_dir = Path(args.output_dir)
@@ -407,6 +552,8 @@ def main():
         train_metrics = train_one_epoch(
             model, dataloader, optimizer, scheduler, device,
             epoch, args.temperature, args.angn_reg_weight,
+            use_pretrained_y_encoder=use_pretrained,
+            scaler=scaler,
         )
         print(f"  Train: loss={train_metrics['loss']:.4f} acc={train_metrics['accuracy']:.3f}")
 
@@ -418,6 +565,7 @@ def main():
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_metrics": train_metrics,
+                "args": vars(args),
             }, ckpt_path)
             print(f"  Saved checkpoint → {ckpt_path}")
 
