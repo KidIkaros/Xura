@@ -69,7 +69,7 @@ class Config:
     query_embed_dim = 1024
     decoder_d_model = 512
     decoder_n_layers = 6
-    decoder_vocab_size = 32000
+    decoder_vocab_size = 32100
     decoder_prefix_len = 8
     epochs = 10
     batch_size = 24
@@ -78,7 +78,7 @@ class Config:
     weight_decay = 0.01
     warmup_steps = 300
     max_seq_len = 64
-    image_size = 224
+    image_size = 518
     fp16 = True
     y_encoder_model = "sentence-transformers/all-MiniLM-L6-v2"
     num_samples = 50000
@@ -177,7 +177,7 @@ print(f"DINOv2 params: {sum(p.numel() for p in dinov2.parameters()) / 1e6:.1f}M"
 # Detect whether forward_features or forward should be used
 _use_forward_features = True
 with torch.no_grad():
-    dummy = torch.randn(1, 3, 224, 224)
+    dummy = torch.randn(1, 3, 518, 518)
     try:
         features = dinov2.forward_features(dummy)
         print(f"forward_features works — output: {features.shape}")

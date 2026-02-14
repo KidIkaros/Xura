@@ -70,7 +70,7 @@ class Config:
     temperature = 0.07
     warmup_steps = 500
     max_seq_len = 128
-    image_size = 224
+    image_size = 518
     fp16 = True
     y_encoder_model = "sentence-transformers/all-MiniLM-L6-v2"
     y_encoder_lr_mult = 0.05
@@ -155,7 +155,7 @@ print(f"DINOv2 params: {sum(p.numel() for p in dinov2.parameters()) / 1e6:.1f}M"
 # Detect whether forward_features or forward should be used
 _use_forward_features = True
 with torch.no_grad():
-    dummy = torch.randn(1, 3, 224, 224)
+    dummy = torch.randn(1, 3, 518, 518)
     try:
         features = dinov2.forward_features(dummy)
         print(f"forward_features works — output: {features.shape}")
