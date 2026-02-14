@@ -118,7 +118,6 @@ import timm
 
 print(f"timm version: {timm.__version__}")
 
-# Try multiple model names — timm naming varies across versions
 DINOV2_MODEL_NAMES = [
     "vit_large_patch14_dinov2.lvd142m",
     "vit_large_patch14_dinov2",
@@ -137,7 +136,6 @@ for model_name in DINOV2_MODEL_NAMES:
         continue
 
 if dinov2 is None:
-    # Last resort: list available dinov2 models
     available = [m for m in timm.list_models("*dinov2*")]
     print(f"Available DINOv2 models in timm: {available[:10]}")
     if available:
@@ -153,45 +151,46 @@ for p in dinov2.parameters():
 print(f"DINOv2 params: {sum(p.numel() for p in dinov2.parameters()) / 1e6:.1f}M")
 
 # %% Cell 7: Verify DINOv2 output and create wrapper
+
+# Detect whether forward_features or forward should be used
+_use_forward_features = True
 with torch.no_grad():
     dummy = torch.randn(1, 3, 224, 224)
     try:
         features = dinov2.forward_features(dummy)
+        print(f"forward_features works — output: {features.shape}")
     except Exception as e:
-        print(f"forward_features failed: {e}")
-        print("Trying direct forward...")
+        print(f"forward_features failed ({e}), falling back to forward()")
+        _use_forward_features = False
         features = dinov2(dummy)
+        print(f"forward() output: {features.shape}")
 
     if features.dim() == 3:
-        features = features[:, 1:, :]  # Remove CLS token
-    elif features.dim() == 2:
-        print(f"Got pooled output {features.shape}, need patch features")
-
-    print(f"DINOv2 output shape: {features.shape}")
+        features = features[:, 1:, :]
+    print(f"Final feature shape (after CLS removal): {features.shape}")
     output_dim = features.shape[-1]
-
     if output_dim != 1024:
         import warnings
-        warnings.warn(
-            f"Expected DINOv2 output dim 1024, got {output_dim}. "
-            f"You may need a projection layer.",
-            stacklevel=2,
-        )
+        warnings.warn(f"Expected dim 1024, got {output_dim}.", stacklevel=2)
 
 class DINOv2Wrapper(nn.Module):
     """Wraps timm DINOv2 to match VisionEncoder interface."""
-    def __init__(self, model):
+    def __init__(self, model, use_forward_features: bool = True):
         super().__init__()
         self.model = model
         self.config = VitConfig.vjepa2_vit_l()
+        self._use_forward_features = use_forward_features
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        features = self.model.forward_features(images)
+        if self._use_forward_features:
+            features = self.model.forward_features(images)
+        else:
+            features = self.model(images)
         if features.dim() == 3 and features.shape[1] > self.config.num_patches:
             features = features[:, 1:, :]
         return features
 
-x_encoder = DINOv2Wrapper(dinov2).to(DEVICE)
+x_encoder = DINOv2Wrapper(dinov2, use_forward_features=_use_forward_features).to(DEVICE)
 x_encoder.eval()
 for p in x_encoder.parameters():
     p.requires_grad = False
