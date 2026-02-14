@@ -136,7 +136,9 @@ if not XURA_DIR.exists():
 else:
     print(f"Xura already exists at {XURA_DIR}")
 
-# Add training dir to path
+# Add both project root AND training dir to path so imports work either way
+# e.g. "from utils.export_weights" (via training/) or "from training.utils" (via root)
+sys.path.insert(0, str(XURA_DIR))
 sys.path.insert(0, str(XURA_DIR / "training"))
 
 # Import Xura models
@@ -274,14 +276,17 @@ print(f"VRAM after model load: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 # ## Dataset: CC3M Subset via HuggingFace
 #
 # Uses streaming mode to avoid downloading the full 590GB CC3M dataset.
-# Falls back to synthetic data if unavailable.
+# Only stores captions in memory (~50MB for 50k strings). Images are
+# stored as compressed JPEG bytes, not decoded PIL images, to keep
+# RAM usage under ~500MB total for 50k samples.
 
 # %% Dataset
 class CC3MDataset(Dataset):
     """CC3M dataset from HuggingFace, with synthetic fallback.
 
     Uses streaming=True to avoid downloading the full 590GB dataset.
-    Materializes only num_samples into memory.
+    Stores only captions (strings) and compressed image bytes to keep
+    RAM usage low (~500MB for 50k samples instead of ~5-10GB for decoded images).
     """
 
     def __init__(self, num_samples: int, image_size: int, max_seq_len: int, tokenizer):
@@ -289,7 +294,9 @@ class CC3MDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.tokenizer = tokenizer
         self.use_synthetic = False
-        self.materialized_samples = []
+        # Store only lightweight data: caption string + compressed image bytes
+        self.captions: list[str] = []
+        self.image_bytes: list[bytes | None] = []
 
         self.transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -303,6 +310,7 @@ class CC3MDataset(Dataset):
 
         # Try loading CC3M from HuggingFace with streaming
         try:
+            import io
             from datasets import load_dataset
             print(f"Loading CC3M subset ({num_samples} samples) via streaming...")
             stream = load_dataset(
@@ -310,12 +318,32 @@ class CC3MDataset(Dataset):
                 split="train",
                 streaming=True,
             )
-            # Materialize only the samples we need
+            # Materialize only captions + compressed image bytes (not decoded PIL)
             for i, sample in enumerate(stream):
                 if i >= num_samples:
                     break
-                self.materialized_samples.append(sample)
-            print(f"Materialized {len(self.materialized_samples)} CC3M samples.")
+                # Extract caption
+                caption = sample.get("caption", sample.get("txt", "a photo"))
+                if not isinstance(caption, str):
+                    caption = str(caption)
+                self.captions.append(caption)
+
+                # Store image as compressed JPEG bytes (not decoded)
+                img = sample.get("image")
+                if isinstance(img, Image.Image):
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=85)
+                    self.image_bytes.append(buf.getvalue())
+                elif isinstance(sample.get("jpg"), bytes):
+                    self.image_bytes.append(sample["jpg"])
+                else:
+                    self.image_bytes.append(None)
+
+                if (i + 1) % 5000 == 0:
+                    print(f"  ... {i + 1}/{num_samples} samples loaded")
+
+            print(f"Loaded {len(self.captions)} CC3M samples "
+                  f"(~{sum(len(b) for b in self.image_bytes if b) / 1e6:.0f}MB image bytes)")
         except Exception as e:
             print(f"CC3M unavailable ({e}). Using synthetic data.")
             self.use_synthetic = True
@@ -324,31 +352,25 @@ class CC3MDataset(Dataset):
     def __len__(self):
         if self.use_synthetic:
             return self.num_samples
-        return len(self.materialized_samples)
+        return len(self.captions)
 
     def __getitem__(self, idx):
         if self.use_synthetic:
             return self._synthetic_sample()
 
-        sample = self.materialized_samples[idx]
+        raw_text = self.captions[idx]
 
-        # Load image
+        # Decode image from compressed bytes on-the-fly
         try:
-            if isinstance(sample.get("image"), Image.Image):
-                img = sample["image"].convert("RGB")
-            elif "jpg" in sample:
+            img_data = self.image_bytes[idx]
+            if img_data is not None:
                 import io
-                img = Image.open(io.BytesIO(sample["jpg"])).convert("RGB")
+                img = Image.open(io.BytesIO(img_data)).convert("RGB")
             else:
                 img = Image.new("RGB", (self.image_size, self.image_size))
             image_tensor = self.transform(img)
         except Exception:
             image_tensor = torch.randn(3, self.image_size, self.image_size)
-
-        # Get caption
-        raw_text = sample.get("caption", sample.get("txt", "a photo"))
-        if not isinstance(raw_text, str):
-            raw_text = str(raw_text)
 
         # Tokenize
         encoded = self.tokenizer(
@@ -591,7 +613,11 @@ print(f"{'='*60}")
 best_path = output_dir / "phase1_best.pt"
 if best_path.exists():
     try:
-        from utils.export_weights import export_to_safetensors
+        # Try both import paths — project root and training/ are both in sys.path
+        try:
+            from training.utils.export_weights import export_to_safetensors
+        except ImportError:
+            from utils.export_weights import export_to_safetensors
         export_to_safetensors(str(best_path), str(output_dir / "safetensors"), phase=1)
         print("Safetensors export complete.")
     except ImportError:
