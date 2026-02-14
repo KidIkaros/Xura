@@ -17,6 +17,8 @@ What it does:
 
 Estimated time: ~2 hours for 10 epochs on 50k CC3M samples.
 Estimated VRAM: ~12GB peak (fits in T4's 15GB).
+
+Compatibility: PyTorch >= 2.2.0 (uses torch.cuda.amp API, not torch.amp)
 """
 
 # %% [markdown]
@@ -48,6 +50,7 @@ print("Dependencies installed.")
 
 # %% Imports
 import os
+import math
 import time
 import json
 import random
@@ -65,7 +68,7 @@ print(f"PyTorch: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
+    print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -177,11 +180,9 @@ def load_dinov2_vit_l(device: torch.device) -> nn.Module:
     # Verify output dim
     with torch.no_grad():
         dummy = torch.randn(1, 3, 224, 224)
-        # Get intermediate features (patch tokens, not CLS)
         features = dinov2.forward_features(dummy)
         if features.dim() == 3:
-            # (B, num_patches+1, dim) — includes CLS token
-            features = features[:, 1:, :]  # Remove CLS
+            features = features[:, 1:, :]  # Remove CLS token
         print(f"DINOv2 output: {features.shape}")
         output_dim = features.shape[-1]
         if output_dim != 1024:
@@ -434,8 +435,10 @@ if model.query_embedding is not None:
 
 optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg.weight_decay)
 
-# Account for grad accumulation in total steps
-steps_per_epoch = len(dataloader) // cfg.grad_accum_steps
+# Compute total optimizer steps, accounting for grad accumulation and
+# the final incomplete batch (which also triggers an optimizer step).
+num_batches = len(dataloader)
+steps_per_epoch = math.ceil(num_batches / cfg.grad_accum_steps)
 total_steps = steps_per_epoch * cfg.epochs
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer,
@@ -445,7 +448,8 @@ scheduler = torch.optim.lr_scheduler.OneCycleLR(
 )
 
 # Mixed precision scaler
-scaler = torch.amp.GradScaler('cuda') if cfg.fp16 and DEVICE.type == "cuda" else None
+# Use torch.cuda.amp API for PyTorch 2.2+ compatibility (not torch.amp which is 2.4+)
+scaler = torch.cuda.amp.GradScaler() if cfg.fp16 and DEVICE.type == "cuda" else None
 if scaler:
     print("FP16 mixed precision enabled")
 
@@ -476,7 +480,6 @@ for epoch in range(1, cfg.epochs + 1):
 
     optimizer.zero_grad()
 
-    num_batches = len(dataloader)
     for batch_idx, batch in enumerate(dataloader):
         images = batch["image"].to(DEVICE)
         tokens = batch["tokens"].to(DEVICE)
@@ -490,8 +493,9 @@ for epoch in range(1, cfg.epochs + 1):
         target_embeds = model.y_encoder(raw_texts)
 
         # Forward with mixed precision
+        # Use torch.cuda.amp.autocast for PyTorch 2.2+ compatibility
         use_amp = scaler is not None
-        with torch.amp.autocast('cuda', enabled=use_amp):
+        with torch.cuda.amp.autocast(enabled=use_amp):
             outputs = model.forward_jepa(
                 images=images,
                 query_tokens=query_embeds,
