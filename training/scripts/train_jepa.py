@@ -484,8 +484,8 @@ def main():
             y_decoder=Mamba3Decoder.small(),
             shared_embed_dim=1536,
         )
-        image_size = 224
-        vocab_size = 32000
+        image_size = 518
+        vocab_size = 32100
 
     model = model.to(device)
 

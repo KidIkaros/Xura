@@ -38,7 +38,7 @@ class Mamba3Decoder(nn.Module):
         d_state: int = 64,
         expand: int = 2,
         headdim: int = 32,
-        vocab_size: int = 32000,
+        vocab_size: int = 32100,
         prefix_len: int = 8,
         embed_dim: int = 1536,
     ):
@@ -173,7 +173,7 @@ class Mamba3Decoder(nn.Module):
         """Small preset matching Rust Mamba3DecoderConfig::small()."""
         return cls(
             d_model=512, n_layers=6, d_state=64,
-            expand=2, headdim=32, vocab_size=32000,
+            expand=2, headdim=32, vocab_size=32100,
             prefix_len=8, embed_dim=1536,
         )
 
