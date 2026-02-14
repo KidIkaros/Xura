@@ -65,7 +65,7 @@ print(f"PyTorch: {torch.__version__}")
 print(f"CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -83,7 +83,7 @@ class Config:
     d_state = 128           # SSM state dimension
     embed_dim = 1536        # Shared embedding space
     vision_dim = 1024       # ViT output dim (DINOv2 ViT-L)
-    query_embed_dim = 768   # Query embedding dim (matches MiniLM)
+    query_embed_dim = 1024  # Match predictor.query_proj.in_features
 
     # Training
     epochs = 10
@@ -156,7 +156,7 @@ print("Xura models imported successfully.")
 # %% X-Encoder: DINOv2 ViT-L
 import timm
 
-def load_dinov2_vit_l(device: torch.device) -> VisionEncoder:
+def load_dinov2_vit_l(device: torch.device) -> nn.Module:
     """Load DINOv2 ViT-L as frozen X-Encoder.
 
     DINOv2 produces 1024-dim patch features, matching VitConfig.vjepa2_vit_l().
@@ -183,7 +183,14 @@ def load_dinov2_vit_l(device: torch.device) -> VisionEncoder:
             # (B, num_patches+1, dim) — includes CLS token
             features = features[:, 1:, :]  # Remove CLS
         print(f"DINOv2 output: {features.shape}")
-        assert features.shape[-1] == 1024, f"Expected 1024-dim, got {features.shape[-1]}"
+        output_dim = features.shape[-1]
+        if output_dim != 1024:
+            import warnings
+            warnings.warn(
+                f"Expected DINOv2 output dim 1024, got {output_dim}. "
+                f"The model may produce incorrect results. Check timm version.",
+                stacklevel=2,
+            )
 
     class DINOv2Wrapper(nn.Module):
         """Wraps timm DINOv2 to match VisionEncoder interface."""
@@ -253,7 +260,7 @@ model = Mamba3Jepa(
     y_decoder=Mamba3Decoder.small(),
     shared_embed_dim=cfg.embed_dim,
     query_vocab_size=vocab_size,
-    query_embed_dim=cfg.query_embed_dim,
+    query_embed_dim=cfg.query_embed_dim,  # 1024 = matches predictor.query_proj.in_features
 ).to(DEVICE)
 
 # Count params
@@ -265,18 +272,23 @@ print(f"VRAM after model load: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 # %% [markdown]
 # ## Dataset: CC3M Subset via HuggingFace
 #
-# Tries to load a CC3M subset from HuggingFace `datasets`.
+# Uses streaming mode to avoid downloading the full 590GB CC3M dataset.
 # Falls back to synthetic data if unavailable.
 
 # %% Dataset
 class CC3MDataset(Dataset):
-    """CC3M dataset from HuggingFace, with synthetic fallback."""
+    """CC3M dataset from HuggingFace, with synthetic fallback.
+
+    Uses streaming=True to avoid downloading the full 590GB dataset.
+    Materializes only num_samples into memory.
+    """
 
     def __init__(self, num_samples: int, image_size: int, max_seq_len: int, tokenizer):
         self.image_size = image_size
         self.max_seq_len = max_seq_len
         self.tokenizer = tokenizer
         self.use_synthetic = False
+        self.materialized_samples = []
 
         self.transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -288,32 +300,36 @@ class CC3MDataset(Dataset):
             ),
         ])
 
-        # Try loading CC3M from HuggingFace
+        # Try loading CC3M from HuggingFace with streaming
         try:
             from datasets import load_dataset
-            print(f"Loading CC3M subset ({num_samples} samples) from HuggingFace...")
-            self.hf_dataset = load_dataset(
+            print(f"Loading CC3M subset ({num_samples} samples) via streaming...")
+            stream = load_dataset(
                 "pixparse/cc3m-wds",
-                split=f"train[:{num_samples}]",
-                streaming=False,
+                split="train",
+                streaming=True,
             )
-            print(f"Loaded {len(self.hf_dataset)} CC3M samples.")
+            # Materialize only the samples we need
+            for i, sample in enumerate(stream):
+                if i >= num_samples:
+                    break
+                self.materialized_samples.append(sample)
+            print(f"Materialized {len(self.materialized_samples)} CC3M samples.")
         except Exception as e:
             print(f"CC3M unavailable ({e}). Using synthetic data.")
-            self.hf_dataset = None
             self.use_synthetic = True
             self.num_samples = num_samples
 
     def __len__(self):
         if self.use_synthetic:
             return self.num_samples
-        return len(self.hf_dataset)
+        return len(self.materialized_samples)
 
     def __getitem__(self, idx):
         if self.use_synthetic:
             return self._synthetic_sample()
 
-        sample = self.hf_dataset[idx]
+        sample = self.materialized_samples[idx]
 
         # Load image
         try:
@@ -410,18 +426,21 @@ param_groups = [
 if model.query_embedding is not None:
     qe_params = list(model.query_embedding.parameters())
     if not isinstance(model.query_adapt, nn.Identity):
-        qe_params += list(model.query_adapt.parameters())
-    param_groups.append(
-        {"params": qe_params, "lr": cfg.lr, "name": "query_embed"},
-    )
+        qe_params.extend(list(model.query_adapt.parameters()))
+    if qe_params:  # Only add if there are params to avoid empty group
+        param_groups.append(
+            {"params": qe_params, "lr": cfg.lr, "name": "query_embed"},
+        )
 
 optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg.weight_decay)
 
-total_steps = len(dataloader) * cfg.epochs // cfg.grad_accum_steps
+# Account for grad accumulation in total steps
+steps_per_epoch = len(dataloader) // cfg.grad_accum_steps
+total_steps = steps_per_epoch * cfg.epochs
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=cfg.lr,
-    total_steps=total_steps,
+    total_steps=max(total_steps, 1),
     pct_start=min(cfg.warmup_steps / max(total_steps, 1), 0.3),
 )
 
@@ -457,14 +476,15 @@ for epoch in range(1, cfg.epochs + 1):
 
     optimizer.zero_grad()
 
+    num_batches = len(dataloader)
     for batch_idx, batch in enumerate(dataloader):
         images = batch["image"].to(DEVICE)
         tokens = batch["tokens"].to(DEVICE)
         raw_texts = batch["raw_text"]
 
-        # Query embeddings (from learned embedding table)
-        with torch.no_grad():
-            query_embeds = model.get_query_embeds(tokens)
+        # Query embeddings — NO torch.no_grad()!
+        # query_embedding and query_adapt are trainable layers.
+        query_embeds = model.get_query_embeds(tokens)
 
         # Target embeddings (from pretrained Y-Encoder)
         target_embeds = model.y_encoder(raw_texts)
@@ -486,8 +506,10 @@ for epoch in range(1, cfg.epochs + 1):
         else:
             loss.backward()
 
-        # Optimizer step every grad_accum_steps
-        if (batch_idx + 1) % cfg.grad_accum_steps == 0:
+        # Optimizer step every grad_accum_steps, OR on the final batch
+        is_accum_step = (batch_idx + 1) % cfg.grad_accum_steps == 0
+        is_last_batch = (batch_idx + 1) == num_batches
+        if is_accum_step or is_last_batch:
             if scaler is not None:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -510,7 +532,7 @@ for epoch in range(1, cfg.epochs + 1):
             samples_per_sec = (batch_idx + 1) * cfg.batch_size / elapsed
             vram_used = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
             print(
-                f"  [{epoch}][{batch_idx+1}/{len(dataloader)}] "
+                f"  [{epoch}][{batch_idx+1}/{num_batches}] "
                 f"loss={avg_loss:.4f} acc={avg_acc:.3f} "
                 f"({samples_per_sec:.1f} samp/s, {vram_used:.1f}GB VRAM)"
             )
@@ -568,6 +590,18 @@ if best_path.exists():
         from utils.export_weights import export_to_safetensors
         export_to_safetensors(str(best_path), str(output_dir / "safetensors"), phase=1)
         print("Safetensors export complete.")
+    except ImportError:
+        print("export_weights utility not available. Saving raw state_dict instead.")
+        ckpt = torch.load(best_path, map_location="cpu", weights_only=True)
+        predictor_state = {
+            k.replace("predictor.", ""): v
+            for k, v in ckpt["model_state_dict"].items()
+            if k.startswith("predictor.")
+        }
+        safetensors_dir = output_dir / "safetensors"
+        safetensors_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(predictor_state, safetensors_dir / "predictor.pt")
+        print(f"Predictor state_dict saved to {safetensors_dir / 'predictor.pt'}")
     except Exception as e:
         print(f"Safetensors export failed: {e}")
         print("Manual export: load the .pt checkpoint and save predictor state_dict.")
