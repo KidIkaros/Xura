@@ -18,7 +18,7 @@ What it does:
 Estimated time: ~2 hours for 10 epochs on 50k CC3M samples.
 Estimated VRAM: ~12GB peak (fits in T4's 15GB).
 
-Compatibility: PyTorch >= 2.2.0 (uses torch.cuda.amp API, not torch.amp)
+Compatibility: PyTorch 2.2.x-2.5.x (uses torch.cuda.amp API)
 """
 
 # %% [markdown]
@@ -35,15 +35,15 @@ def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package])
 
 print("Installing dependencies...")
-install("torch>=2.2.0")
-install("torchvision>=0.17.0")
-install("timm>=0.9.12")
-install("transformers>=4.36.0")
-install("sentence-transformers>=2.3.0")
-install("safetensors>=0.4.0")
-install("einops>=0.7.0")
-install("datasets>=2.16.0")
-install("wandb>=0.16.0")
+install("torch>=2.2.0,<2.6.0")
+install("torchvision>=0.17.0,<0.21.0")
+install("timm>=0.9.12,<1.0.0")
+install("transformers>=4.36.0,<5.0.0")
+install("sentence-transformers>=2.3.0,<3.0.0")
+install("safetensors>=0.4.0,<1.0.0")
+install("einops>=0.7.0,<1.0.0")
+install("datasets>=2.16.0,<3.0.0")
+install("wandb>=0.16.0,<1.0.0")
 install("tqdm>=4.66.0")
 install("pillow>=10.0.0")
 print("Dependencies installed.")
@@ -448,7 +448,7 @@ scheduler = torch.optim.lr_scheduler.OneCycleLR(
 )
 
 # Mixed precision scaler
-# Use torch.cuda.amp API for PyTorch 2.2+ compatibility (not torch.amp which is 2.4+)
+# Use torch.cuda.amp API for PyTorch 2.2-2.5 compatibility
 scaler = torch.cuda.amp.GradScaler() if cfg.fp16 and DEVICE.type == "cuda" else None
 if scaler:
     print("FP16 mixed precision enabled")
@@ -493,7 +493,7 @@ for epoch in range(1, cfg.epochs + 1):
         target_embeds = model.y_encoder(raw_texts)
 
         # Forward with mixed precision
-        # Use torch.cuda.amp.autocast for PyTorch 2.2+ compatibility
+        # Use torch.cuda.amp.autocast for PyTorch 2.2-2.5 compatibility
         use_amp = scaler is not None
         with torch.cuda.amp.autocast(enabled=use_amp):
             outputs = model.forward_jepa(
@@ -596,7 +596,8 @@ if best_path.exists():
         print("Safetensors export complete.")
     except ImportError:
         print("export_weights utility not available. Saving raw state_dict instead.")
-        ckpt = torch.load(best_path, map_location="cpu", weights_only=True)
+        # Use map_location only — weights_only requires PyTorch 2.6+
+        ckpt = torch.load(best_path, map_location="cpu")
         predictor_state = {
             k.replace("predictor.", ""): v
             for k, v in ckpt["model_state_dict"].items()
