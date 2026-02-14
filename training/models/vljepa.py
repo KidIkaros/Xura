@@ -74,6 +74,10 @@ class Mamba3Jepa(nn.Module):
         Uses self.query_embedding if available (pretrained Y-Encoder mode),
         otherwise falls back to y_encoder.embedding (Mamba Y-Encoder mode).
 
+        NOTE: This method is differentiable — do NOT wrap calls in
+        torch.no_grad() during training, or the query_embedding and
+        query_adapt layers will not learn.
+
         Args:
             token_ids: (batch, seq_len) integer token IDs
 
@@ -91,11 +95,10 @@ class Mamba3Jepa(nn.Module):
                 if embeds.shape[-1] > qry_dim:
                     embeds = embeds[..., :qry_dim]
                 else:
-                    pad = torch.zeros(
-                        *embeds.shape[:-1], qry_dim - embeds.shape[-1],
-                        device=embeds.device,
+                    raise ValueError(
+                        f"Y-Encoder embedding dim {embeds.shape[-1]} < predictor query dim {qry_dim}. "
+                        f"Use learned projection (--pretrained-y-encoder) instead of zero-padding."
                     )
-                    embeds = torch.cat([embeds, pad], dim=-1)
             return embeds
 
     def forward_jepa(
@@ -256,7 +259,7 @@ class Mamba3Jepa(nn.Module):
             y_decoder=Mamba3Decoder.small(),
             shared_embed_dim=1536,
             query_vocab_size=vocab_size,
-            query_embed_dim=768,
+            query_embed_dim=1024,  # Match predictor.query_proj.in_features
         )
 
     @classmethod

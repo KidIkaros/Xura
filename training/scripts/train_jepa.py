@@ -172,7 +172,6 @@ class ImageTextDataset(Dataset):
 
     def _synthetic_sample(self) -> dict:
         """Generate a synthetic sample for testing the training loop."""
-        # Generate a random but plausible caption
         captions = [
             "A cat sitting on a windowsill in the sunlight",
             "A dog playing fetch in the park on a sunny day",
@@ -235,9 +234,9 @@ def train_one_epoch(
         images = batch["image"].to(device)
         tokens = batch["tokens"].to(device)
 
-        # Get query embeddings via the model's unified interface
-        with torch.no_grad():
-            query_embeds = model.get_query_embeds(tokens)
+        # Get query embeddings — NO torch.no_grad() here!
+        # query_embedding and query_adapt are trainable layers.
+        query_embeds = model.get_query_embeds(tokens)
 
         # Get target embeddings
         if use_pretrained_y_encoder:
@@ -317,7 +316,11 @@ def validate(
     temperature: float = 0.07,
     use_pretrained_y_encoder: bool = False,
 ) -> dict:
-    """Validate Phase 1 JEPA."""
+    """Validate Phase 1 JEPA.
+
+    Note: @torch.no_grad() is correct here — validation does not update weights.
+    The query embeddings don't need gradients for metric computation.
+    """
     model.eval()
     total_loss = 0.0
     total_acc = 0.0
@@ -455,7 +458,7 @@ def main():
             y_decoder=Mamba3Decoder.small(),
             shared_embed_dim=1536,
             query_vocab_size=vocab_size,
-            query_embed_dim=768,
+            query_embed_dim=1024,  # Match predictor.query_proj.in_features
         )
         image_size = 224
     else:
@@ -517,12 +520,12 @@ def main():
     ]
     # Query embedding + adapt (only exist in pretrained mode)
     if model.query_embedding is not None:
-        param_groups.append({
-            "params": list(model.query_embedding.parameters()) +
-                     (list(model.query_adapt.parameters())
-                      if not isinstance(model.query_adapt, nn.Identity) else []),
-            "lr": args.lr,
-        })
+        qe_params = list(model.query_embedding.parameters())
+        if not isinstance(model.query_adapt, nn.Identity):
+            qe_params.extend(list(model.query_adapt.parameters()))
+        if qe_params:  # Only add if there are params
+            param_groups.append({"params": qe_params, "lr": args.lr})
+
     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     total_steps = len(dataloader) * args.epochs

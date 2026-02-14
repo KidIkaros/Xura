@@ -97,20 +97,3 @@ class PretrainedTextEncoder(nn.Module):
         # Project + normalize
         projected = self.projection(pooled)  # (B, embed_dim)
         return F.normalize(projected, p=2, dim=-1)
-
-    def encode_tokens(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Fallback: encode token IDs by decoding to text first.
-
-        This allows backward compatibility with code that passes token tensors.
-
-        Args:
-            token_ids: (batch, seq_len) integer token IDs
-
-        Returns:
-            (batch, embed_dim) — L2-normalized target embedding
-        """
-        texts = [
-            self.tokenizer.decode(ids, skip_special_tokens=True)
-            for ids in token_ids.tolist()
-        ]
-        return self.forward(texts)
