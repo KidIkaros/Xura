@@ -61,19 +61,16 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # %% Cell 3: Configuration
 class Config:
-    # Model (must match Phase 1)
     d_model = 1024
     n_layers = 12
     d_state = 128
     embed_dim = 1536
     vision_dim = 1024
     query_embed_dim = 1024
-    # Decoder
     decoder_d_model = 512
     decoder_n_layers = 6
     decoder_vocab_size = 32000
     decoder_prefix_len = 8
-    # Training
     epochs = 10
     batch_size = 24
     grad_accum_steps = 8
@@ -83,12 +80,9 @@ class Config:
     max_seq_len = 64
     image_size = 224
     fp16 = True
-    # Y-Encoder (must match Phase 1)
     y_encoder_model = "sentence-transformers/all-MiniLM-L6-v2"
-    # Data
     num_samples = 50000
     num_workers = 2
-    # Logging
     use_wandb = False
     wandb_project = "xura-mamba3-decoder"
     log_interval = 25
@@ -178,33 +172,46 @@ for p in dinov2.parameters():
     p.requires_grad = False
 print(f"DINOv2 params: {sum(p.numel() for p in dinov2.parameters()) / 1e6:.1f}M")
 
-# %% Cell 8: Create DINOv2 wrapper
+# %% Cell 8: Verify DINOv2 and create wrapper
+
+# Detect whether forward_features or forward should be used
+_use_forward_features = True
 with torch.no_grad():
     dummy = torch.randn(1, 3, 224, 224)
     try:
         features = dinov2.forward_features(dummy)
+        print(f"forward_features works — output: {features.shape}")
     except Exception as e:
-        print(f"forward_features failed: {e}, trying forward...")
+        print(f"forward_features failed ({e}), falling back to forward()")
+        _use_forward_features = False
         features = dinov2(dummy)
+        print(f"forward() output: {features.shape}")
+
     if features.dim() == 3:
         features = features[:, 1:, :]
-    print(f"DINOv2 output shape: {features.shape}")
+    print(f"Final feature shape: {features.shape}")
     if features.shape[-1] != 1024:
         import warnings
         warnings.warn(f"Expected dim 1024, got {features.shape[-1]}", stacklevel=2)
 
 class DINOv2Wrapper(nn.Module):
-    def __init__(self, model):
+    """Wraps timm DINOv2 to match VisionEncoder interface."""
+    def __init__(self, model, use_forward_features: bool = True):
         super().__init__()
         self.model = model
         self.config = VitConfig.vjepa2_vit_l()
-    def forward(self, images):
-        features = self.model.forward_features(images)
+        self._use_forward_features = use_forward_features
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        if self._use_forward_features:
+            features = self.model.forward_features(images)
+        else:
+            features = self.model(images)
         if features.dim() == 3 and features.shape[1] > self.config.num_patches:
             features = features[:, 1:, :]
         return features
 
-x_encoder = DINOv2Wrapper(dinov2).to(DEVICE)
+x_encoder = DINOv2Wrapper(dinov2, use_forward_features=_use_forward_features).to(DEVICE)
 x_encoder.eval()
 for p in x_encoder.parameters():
     p.requires_grad = False
